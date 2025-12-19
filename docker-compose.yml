@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  howbadisit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: web-howbadisit:1.0.0
+    container_name: howbadisit
+    
+    # Volume para salvar relatórios no host
+    volumes:
+      - ./reports:/app/reports
+    
+    # Variáveis de ambiente (opcional)
+    environment:
+      - PYTHONUNBUFFERED=1
+    
+    # Network mode host para permitir port scanning
+    network_mode: host
+    
+    # Recursos (opcional - limitar uso de CPU/RAM)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 1G
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 256M
+    
+    # Restart policy
+    restart: "no"
+    
+    # Comando padrão (sobrescrever na linha de comando)
+    # command: ["-t", "example.com", "-o", "json", "-f", "/app/reports/report.json"]

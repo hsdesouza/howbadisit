@@ -1,0 +1,81 @@
+PROPRIETARY SOFTWARE LICENSE
+
+Copyright (c) 2024 MSSP Red Team Security. All rights reserved.
+
+TERMS AND CONDITIONS
+
+1. GRANT OF LICENSE
+   This software and associated documentation files (the "Software") are provided
+   under a proprietary license. Use of the Software is restricted to authorized
+   MSSP personnel and clients only.
+
+2. RESTRICTIONS
+   You may NOT:
+   - Distribute, sublicense, or sell copies of the Software
+   - Modify, reverse engineer, or create derivative works
+   - Use the Software for illegal or unauthorized penetration testing
+   - Remove or alter any proprietary notices or labels
+   - Use the Software without explicit written authorization from target owners
+
+3. AUTHORIZED USE
+   The Software may be used ONLY for:
+   - Authorized security assessments with written client permission
+   - Internal security testing of owned infrastructure
+   - Educational purposes within authorized training programs
+   - Compliance and audit activities with proper authorization
+
+4. LEGAL COMPLIANCE
+   Users MUST:
+   - Obtain written authorization before testing any target
+   - Comply with all applicable laws and regulations including:
+     * Lei Carolina Dieckmann (Lei 12.737/2012) - Brazil
+     * Computer Fraud and Abuse Act (CFAA) - USA
+     * Computer Misuse Act - UK
+     * LGPD (Lei Geral de Proteção de Dados) - Brazil
+   - Maintain confidentiality of all findings
+   - Report findings only to authorized parties
+
+5. DISCLAIMER OF WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+6. LIMITATION OF LIABILITY
+   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+   USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+7. ETHICAL GUIDELINES
+   This tool is designed for defensive security purposes. Users must:
+   - Act with integrity and professionalism
+   - Respect privacy and data protection laws
+   - Never cause harm or disruption
+   - Document all activities thoroughly
+   - Follow responsible disclosure practices
+
+8. TERMINATION
+   This license is effective until terminated. Your rights under this license
+   will terminate automatically without notice if you fail to comply with any
+   term(s) of this license.
+
+9. GOVERNING LAW
+   This license shall be governed by and construed in accordance with the laws
+   of Brazil, specifically compliance with:
+   - Marco Civil da Internet (Lei 12.965/2014)
+   - Lei de Crimes Cibernéticos (Lei 12.737/2012)
+   - LGPD (Lei 13.709/2018)
+
+10. ACKNOWLEDGMENT
+    BY USING THIS SOFTWARE, YOU ACKNOWLEDGE THAT YOU HAVE READ THIS LICENSE,
+    UNDERSTAND IT, AND AGREE TO BE BOUND BY ITS TERMS AND CONDITIONS.
+
+For licensing inquiries, contact: [Your Contact Information]
+
+IMPORTANT NOTICE:
+Unauthorized use of this software for attacking systems without explicit
+permission is illegal and unethical. Users are solely responsible for ensuring
+they have proper authorization and comply with all applicable laws.
+
+Last Updated: December 18, 2024
+Version: 1.0.0

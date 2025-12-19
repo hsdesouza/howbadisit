@@ -1,0 +1,27 @@
+# Web Pentest Scanner - Requirements (Docker/Python 3.11)
+# Versões ORIGINAIS compatíveis com Python 3.11
+
+# HTTP/HTTPS requests
+requests==2.31.0
+urllib3==2.1.0
+
+# HTML parsing
+beautifulsoup4==4.12.2
+lxml==4.9.3
+
+# DNS resolution
+dnspython==2.4.2
+
+# Network scanning
+python-nmap==0.7.1
+
+# SSL/TLS analysis
+pyOpenSSL==23.3.0
+cryptography==41.0.7
+
+# Data validation
+certifi==2023.11.17
+
+# CLI enhancements (optional)
+colorama==0.4.6
+termcolor==2.4.0
