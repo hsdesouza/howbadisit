@@ -1,4 +1,4 @@
-# HowBadIsIt? v2.0 - MSSP Professional Tool
+# HowBadIsIt? v2.1 - MSSP Professional Tool
 
 ![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.11-green.svg)
@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/hsdesouza/howbadisit/main/setup.sh 
 1. Detectar seu sistema (Ubuntu/Debian/Kali, WSL/VM/Hardware)
 2. Instalar Git (se necessário)
 3. Instalar Docker (se necessário)
-4. Clonar o repositório para `/opt/pentest`
+4. Clonar o repositório para `/opt/howbadisit`
 5. Fazer build da imagem Docker
 6. Configurar aliases
 7. Validar instalação
@@ -70,7 +70,7 @@ Após a instalação:
 
 ```bash
 # Navegar até o diretório
-cd /opt/pentest
+cd /opt/howbadisit
 
 # Scan interativo (mais fácil)
 ./howbadisit.sh scan
@@ -222,7 +222,7 @@ Este scanner deve ser usado **APENAS** com permissão explícita do proprietári
 ## 📁 **Estrutura de Arquivos**
 
 ```
-/opt/pentest/
+/opt/howbadisit/
 ├── setup.sh                       # Script de instalação automatizada ⭐ NOVO
 ├── howbadisit.py         # Script principal de pentest
 ├── Dockerfile                     # Definição da imagem Docker
@@ -264,7 +264,7 @@ newgrp docker
 
 ### **Reinstalar/Atualizar**
 ```bash
-cd /opt/pentest
+cd /opt/howbadisit
 git pull
 docker build -t howbadisit .
 
@@ -275,7 +275,7 @@ pentest-update
 ### **Limpar tudo e recomeçar**
 ```bash
 # Remover instalação
-sudo rm -rf /opt/pentest
+sudo rm -rf /opt/howbadisit
 
 # Remover imagem Docker
 docker rmi howbadisit
@@ -321,7 +321,7 @@ CLIENTES=(
     "cliente3.com.br:cliente3"
 )
 
-cd /opt/pentest
+cd /opt/howbadisit
 
 for item in "${CLIENTES[@]}"; do
     DOMAIN="${item%%:*}"
@@ -345,10 +345,10 @@ done
 crontab -e
 
 # Adicionar scan diário às 2h
-0 2 * * * cd /opt/pentest && ./howbadisit.sh run -t cliente.com -o json -f /app/reports/daily_$(date +\%Y\%m\%d).json
+0 2 * * * cd /opt/howbadisit && ./howbadisit.sh run -t cliente.com -o json -f /app/reports/daily_$(date +\%Y\%m\%d).json
 
 # Scan semanal aos domingos
-0 3 * * 0 cd /opt/pentest && ./howbadisit.sh run -t cliente.com -o json -f /app/reports/weekly_$(date +\%Y\%m\%d).json
+0 3 * * 0 cd /opt/howbadisit && ./howbadisit.sh run -t cliente.com -o json -f /app/reports/weekly_$(date +\%Y\%m\%d).json
 ```
 
 ---
@@ -358,7 +358,7 @@ crontab -e
 ### **Atualizar do Git**
 
 ```bash
-cd /opt/pentest
+cd /opt/howbadisit
 git pull origin main
 
 # Rebuild da imagem
@@ -385,7 +385,7 @@ Ver `CHANGELOG.md` para histórico completo de alterações.
 ### **Logs**
 ```bash
 # Logs do scanner
-cat /opt/pentest/pentest_scanner.log
+cat /opt/howbadisit/pentest_scanner.log
 
 # Logs do Docker (WSL)
 cat /tmp/dockerd.log
@@ -476,7 +476,7 @@ Desenvolvido seguindo melhores práticas de:
 curl -fsSL https://raw.githubusercontent.com/hsdesouza/howbadisit/main/setup.sh | bash
 
 # 2. Primeiro scan
-cd /opt/pentest
+cd /opt/howbadisit
 ./howbadisit.sh scan
 
 # 3. Pronto! 🎉

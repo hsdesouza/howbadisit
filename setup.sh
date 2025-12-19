@@ -1,9 +1,9 @@
 #!/bin/bash
 
 ################################################################################
-# HowBadIsIt? - Automated Setup v2.0
+# HowBadIsIt? - Automated Setup v2.1.0
 # 
-# Installation automatizada em Ubuntu/Debian/Kali Linux
+# Automated installation for Ubuntu/Debian/Kali Linux
 # Funciona em: WSL, VM, Hardware
 # 
 # Uso: curl -fsSL https://raw.githubusercontent.com/hsdesouza/howbadisit/main/setup.sh | bash
@@ -26,7 +26,7 @@ NC='\033[0m' # No Color
 # Variáveis globais
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="howbadisit"
-IMAGE_TAG="2.0.0"
+IMAGE_TAG="2.1.0"
 REPO_URL="git@github.com:hsdesouza/howbadisit.git"
 INSTALL_DIR="/opt/howbadisit"
 
@@ -40,7 +40,7 @@ print_banner() {
     cat << 'EOF'
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║                                                                       ║
-║           WEB PENTEST SCANNER - AUTOMATED SETUP v2.0                 ║
+║           HowBadIsIt? - AUTOMATED SETUP v2.1.0                 ║
 ║                                                                       ║
 ║                    🐳 Docker + Git Automation                         ║
 ║                                                                       ║
@@ -355,10 +355,10 @@ setup_helpers() {
         cat >> "$SHELL_RC" << 'EOF'
 
 # HowBadIsIt? aliases
-alias howbadisit='cd /opt/howbadisit && ./docker_helper.sh run'
-alias howbadisit-scan='cd /opt/howbadisit && ./docker_helper.sh scan'
-alias howbadisit-list='cd /opt/howbadisit && ./docker_helper.sh list'
-alias howbadisit-shell='cd /opt/howbadisit && ./docker_helper.sh shell'
+alias howbadisit='cd /opt/howbadisit && ./howbadisit.sh run'
+alias howbadisit-scan='cd /opt/howbadisit && ./howbadisit.sh scan'
+alias howbadisit-list='cd /opt/howbadisit && ./howbadisit.sh list'
+alias howbadisit-shell='cd /opt/howbadisit && ./howbadisit.sh shell'
 alias howbadisit-update='cd /opt/howbadisit && git pull && docker build -t howbadisit .'
 EOF
         
@@ -387,19 +387,19 @@ create_quick_start() {
    cd /opt/howbadisit
 
    # Interactive scan (easiest)
-   ./docker_helper.sh scan
+   ./howbadisit.sh scan
 
    # Direct scan
-   ./docker_helper.sh run -t example.com
+   ./howbadisit.sh run -t example.com
 
    # Save JSON report
-   ./docker_helper.sh run -t example.com -o json -f /app/reports/report.json
+   ./howbadisit.sh run -t example.com -o json -f /app/reports/report.json
 
    # List all reports
-   ./docker_helper.sh list
+   ./howbadisit.sh list
 
    # Help
-   ./docker_helper.sh help
+   ./howbadisit.sh help
 
 📊 ALIASES (reload shell first: source ~/.bashrc)
 
@@ -548,10 +548,10 @@ main() {
     echo -e "      ${CYAN}cd /opt/howbadisit${NC}"
     echo ""
     echo "  3️⃣  Run your first scan:"
-    echo -e "      ${CYAN}./docker_helper.sh scan${NC}"
+    echo -e "      ${CYAN}./howbadisit.sh scan${NC}"
     echo ""
     echo "  4️⃣  Or use direct command:"
-    echo -e "      ${CYAN}./docker_helper.sh run -t scanme.nmap.org${NC}"
+    echo -e "      ${CYAN}./howbadisit.sh run -t scanme.nmap.org${NC}"
     echo ""
     echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""

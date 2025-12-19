@@ -190,7 +190,7 @@ image_info() {
         echo "Layers:"
         docker history "${IMAGE_NAME}:latest" --no-trunc --format "table {{.CreatedBy}}\t{{.Size}}" | head -n 10
     else
-        warning "Image not found. Run './docker_helper.sh build' first."
+        warning "Image not found. Run './howbadisit.sh build' first."
     fi
 }
 
