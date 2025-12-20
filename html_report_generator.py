@@ -32,6 +32,10 @@ def generate_html_report(json_file, output_file=None):
     
     # Build findings HTML
     findings_html = ""
+    
+    # Group findings by severity for navigation
+    severity_groups = {'critical': [], 'high': [], 'medium': [], 'low': []}
+    
     for result in results:
         test_name = result.get('test_name', 'Unknown')
         severity = result.get('severity', 'INFO').lower()
@@ -40,8 +44,12 @@ def generate_html_report(json_file, output_file=None):
         findings = result.get('findings', [])
         recommendations = result.get('recommendations', [])
         
-        safe_id = test_name.replace(' ', '-').lower()
+        safe_id = test_name.replace(' ', '-').replace('/', '-').lower()
         badge_class = 'pass' if status == 'PASS' else 'info'
+        
+        # Track severity groups
+        if severity in severity_groups and status != 'PASS':
+            severity_groups[severity].append(safe_id)
         
         findings_list = ""
         if findings:
@@ -66,7 +74,7 @@ def generate_html_report(json_file, output_file=None):
                     </div>"""
         
         findings_html += f"""
-            <div class="card finding {severity}" id="{safe_id}">
+            <div class="card finding {severity}" id="{safe_id}" data-severity="{severity}">
                 <div class="finding-header">
                     <div>
                         <div class="finding-title">{test_name}</div>
@@ -85,12 +93,14 @@ def generate_html_report(json_file, output_file=None):
             </div>
 """
     
-    # Build severity links
+    # Build severity links (scroll to first finding of that severity)
     severity_links = ""
     for sev, count_key in [('critical', 'critical'), ('high', 'high'), ('medium', 'medium'), ('low', 'low')]:
         count = summary.get(count_key, 0)
-        if count > 0:
-            severity_links += f'<li class="nav-item"><a href="#{sev}" class="nav-link">{sev.title()} ({count})</a></li>\n'
+        if count > 0 and severity_groups[sev]:
+            # Link to first finding of this severity
+            first_id = severity_groups[sev][0]
+            severity_links += f'<li class="nav-item"><a href="#{first_id}" class="nav-link">{sev.title()} ({count})</a></li>\n'
     
     # Score items
     score_items_html = f"""

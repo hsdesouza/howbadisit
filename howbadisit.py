@@ -376,12 +376,63 @@ class HowBadIsIt:
                 else:
                     result['severity'] = 'MEDIUM'
                 
-                result['recommendations'].extend([
-                    "Remove or restrict access to sensitive files",
-                    "Implement proper .htaccess or server configuration rules",
-                    "Avoid exposing version control directories (.git)",
-                    "Use environment variables instead of config files in web root"
-                ])
+                # Add specific recommendations based on what was found
+                has_git = any('.git' in f['path'] for f in exposed_files)
+                has_env = any('.env' in f['path'] for f in exposed_files)
+                has_sql = any('.sql' in f['path'] or 'backup' in f['path'] or 'dump' in f['path'] 
+                            for f in exposed_files)
+                has_config = any('config' in f['path'] or 'settings' in f['path'] 
+                               for f in exposed_files)
+                has_aws = any('.aws' in f['path'] for f in exposed_files)
+                has_htaccess = any('.htaccess' in f['path'] or 'web.config' in f['path'] 
+                                  for f in exposed_files)
+                has_info_files = any(f['path'] in ['/robots.txt', '/sitemap.xml'] 
+                                    for f in exposed_files)
+                
+                # Only non-info files trigger recommendations
+                critical_files = [f for f in exposed_files 
+                                if f['path'] not in ['/robots.txt', '/sitemap.xml']]
+                
+                if critical_files:
+                    if has_git:
+                        result['recommendations'].append(
+                            "CRITICAL: Remove or block access to .git directory immediately"
+                        )
+                    
+                    if has_env:
+                        result['recommendations'].append(
+                            "CRITICAL: Remove .env files from web root and use environment variables"
+                        )
+                    
+                    if has_sql:
+                        result['recommendations'].append(
+                            "CRITICAL: Delete database backup files (*.sql) from web-accessible directories"
+                        )
+                    
+                    if has_aws:
+                        result['recommendations'].append(
+                            "CRITICAL: Remove AWS credentials file and rotate all exposed keys immediately"
+                        )
+                    
+                    if has_config:
+                        result['recommendations'].append(
+                            "Move configuration files outside web root or implement access restrictions"
+                        )
+                    
+                    if has_htaccess:
+                        result['recommendations'].append(
+                            "Implement proper .htaccess or web.config rules to block sensitive files"
+                        )
+                    
+                    # General recommendation if any critical files found
+                    result['recommendations'].append(
+                        "Audit all web-accessible directories and remove sensitive files"
+                    )
+                elif has_info_files:
+                    # Only robots.txt/sitemap.xml found (this is normal)
+                    result['status'] = 'PASS'
+                    result['severity'] = 'INFO'
+                    result['findings'] = ["robots.txt and/or sitemap.xml found (normal)"]
             else:
                 result['findings'].append("No obvious sensitive files exposed")
         
@@ -674,13 +725,38 @@ class HowBadIsIt:
                 result['status'] = 'VULNERABLE'
                 result['severity'] = 'MEDIUM'
                 
-                result['recommendations'].extend([
-                    "Implement missing security headers",
-                    "Add Strict-Transport-Security with max-age=31536000",
-                    "Set X-Frame-Options to DENY or SAMEORIGIN",
-                    "Implement Content-Security-Policy",
-                    "Add X-Content-Type-Options: nosniff"
-                ])
+                # Add specific recommendations only for missing headers
+                for missing in missing_headers:
+                    header_name = missing['header']
+                    
+                    if header_name == 'Strict-Transport-Security':
+                        result['recommendations'].append(
+                            "Add Strict-Transport-Security header with max-age=31536000 (or higher)"
+                        )
+                    elif header_name == 'X-Frame-Options':
+                        result['recommendations'].append(
+                            "Add X-Frame-Options header (recommended: DENY or SAMEORIGIN)"
+                        )
+                    elif header_name == 'Content-Security-Policy':
+                        result['recommendations'].append(
+                            "Implement Content-Security-Policy to prevent XSS and injection attacks"
+                        )
+                    elif header_name == 'X-Content-Type-Options':
+                        result['recommendations'].append(
+                            "Add X-Content-Type-Options: nosniff to prevent MIME-sniffing"
+                        )
+                    elif header_name == 'X-XSS-Protection':
+                        result['recommendations'].append(
+                            "Add X-XSS-Protection: 1; mode=block (legacy browsers)"
+                        )
+                    elif header_name == 'Referrer-Policy':
+                        result['recommendations'].append(
+                            "Add Referrer-Policy header (recommended: strict-origin-when-cross-origin)"
+                        )
+                    elif header_name == 'Permissions-Policy':
+                        result['recommendations'].append(
+                            "Add Permissions-Policy to control browser features"
+                        )
             else:
                 result['findings'].append("All recommended security headers present")
         
