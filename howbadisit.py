@@ -862,7 +862,7 @@ class HowBadIsIt:
         
         try:
             # Test OPTIONS to see what methods are allowed
-            response = self._make_request('OPTIONS', self.target)
+            response = self._make_request(self.target, 'OPTIONS')
             
             if response and 'Allow' in response.headers:
                 allowed_methods = [m.strip() for m in response.headers['Allow'].split(',')]
@@ -878,7 +878,7 @@ class HowBadIsIt:
                     
                     # Test if they actually work
                     for method in dangerous_found:
-                        test_response = self._make_request(method, self.target)
+                        test_response = self._make_request(self.target, method)
                         if test_response and test_response.status_code not in [405, 501]:
                             findings.append(f"✗ {method} method is FUNCTIONAL (HTTP {test_response.status_code})")
                             severity = 'HIGH'
@@ -899,7 +899,7 @@ class HowBadIsIt:
                 
                 # Test dangerous methods directly
                 for method in dangerous_methods:
-                    response = self._make_request(method, self.target)
+                    response = self._make_request(self.target, method)
                     if response and response.status_code == 200:
                         findings.append(f"⚠️ {method} method returns HTTP 200 (potentially enabled)")
                         severity = 'MEDIUM'
@@ -909,7 +909,7 @@ class HowBadIsIt:
                         findings.append(f"✓ {method} method properly disabled (HTTP {response.status_code})")
             
             # Check for TRACE (XST vulnerability)
-            trace_response = self._make_request('TRACE', self.target)
+            trace_response = self._make_request(self.target, 'TRACE')
             if trace_response and trace_response.status_code == 200:
                 if self.target in trace_response.text:
                     findings.append("✗ TRACE method enabled - Cross-Site Tracing (XST) vulnerability!")
@@ -951,7 +951,7 @@ class HowBadIsIt:
         detected_wafs = []
         
         try:
-            response = self._make_request('GET', self.target)
+            response = self._make_request(self.target, 'GET')
             
             if not response:
                 findings.append("Unable to connect to target")
