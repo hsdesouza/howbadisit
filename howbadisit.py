@@ -122,6 +122,8 @@ class HowBadIsIt:
             self.test_security_headers,
             self.test_form_analysis,
             self.test_cors_misconfiguration,
+            self.test_http_methods,
+            self.test_waf_detection,
         ]
         
         with ThreadPoolExecutor(max_workers=self.threads) as executor:
@@ -839,6 +841,269 @@ class HowBadIsIt:
             result['error'] = str(e)
         
         return result
+    
+    def test_http_methods(self) -> Dict[str, Any]:
+        """
+        Test for insecure HTTP methods.
+        
+        Checks for dangerous HTTP methods like PUT, DELETE, TRACE, CONNECT
+        that could allow unauthorized operations.
+        """
+        logging.info("Running HTTP methods security test...")
+        
+        findings = []
+        recommendations = []
+        severity = 'INFO'
+        status = 'PASS'
+        
+        # Methods to test
+        dangerous_methods = ['PUT', 'DELETE', 'TRACE', 'CONNECT']
+        all_methods = ['OPTIONS', 'HEAD', 'GET', 'POST', 'PUT', 'DELETE', 'TRACE', 'CONNECT', 'PATCH']
+        
+        try:
+            # Test OPTIONS to see what methods are allowed
+            response = self._make_request('OPTIONS', self.target)
+            
+            if response and 'Allow' in response.headers:
+                allowed_methods = [m.strip() for m in response.headers['Allow'].split(',')]
+                findings.append(f"Server reports allowed methods: {', '.join(allowed_methods)}")
+                
+                # Check for dangerous methods
+                dangerous_found = [m for m in dangerous_methods if m in allowed_methods]
+                
+                if dangerous_found:
+                    severity = 'MEDIUM'
+                    status = 'VULNERABLE'
+                    findings.append(f"⚠️ Dangerous methods enabled: {', '.join(dangerous_found)}")
+                    
+                    # Test if they actually work
+                    for method in dangerous_found:
+                        test_response = self._make_request(method, self.target)
+                        if test_response and test_response.status_code not in [405, 501]:
+                            findings.append(f"✗ {method} method is FUNCTIONAL (HTTP {test_response.status_code})")
+                            severity = 'HIGH'
+                        else:
+                            findings.append(f"✓ {method} method returns {test_response.status_code if test_response else 'no response'}")
+                    
+                    recommendations.extend([
+                        "Disable unnecessary HTTP methods (PUT, DELETE, TRACE, CONNECT)",
+                        "Configure web server to only allow GET, POST, HEAD, OPTIONS",
+                        "Implement proper authentication for administrative methods",
+                        "Use Web Application Firewall rules to block dangerous methods"
+                    ])
+                else:
+                    findings.append("✓ No dangerous methods detected in Allow header")
+            else:
+                # OPTIONS not supported or no Allow header
+                findings.append("Server doesn't respond to OPTIONS or provides no Allow header")
+                
+                # Test dangerous methods directly
+                for method in dangerous_methods:
+                    response = self._make_request(method, self.target)
+                    if response and response.status_code == 200:
+                        findings.append(f"⚠️ {method} method returns HTTP 200 (potentially enabled)")
+                        severity = 'MEDIUM'
+                        status = 'VULNERABLE'
+                        recommendations.append(f"Investigate and disable {method} method")
+                    elif response and response.status_code in [405, 501]:
+                        findings.append(f"✓ {method} method properly disabled (HTTP {response.status_code})")
+            
+            # Check for TRACE (XST vulnerability)
+            trace_response = self._make_request('TRACE', self.target)
+            if trace_response and trace_response.status_code == 200:
+                if self.target in trace_response.text:
+                    findings.append("✗ TRACE method enabled - Cross-Site Tracing (XST) vulnerability!")
+                    severity = 'HIGH'
+                    status = 'VULNERABLE'
+                    recommendations.append("Disable TRACE method to prevent XST attacks")
+            
+            if not recommendations:
+                recommendations.append("HTTP methods configuration appears secure")
+                
+        except Exception as e:
+            logging.error(f"HTTP methods test error: {str(e)}")
+            findings.append(f"Test error: {str(e)}")
+            status = 'ERROR'
+        
+        return {
+            'test_name': 'HTTP Methods Security',
+            'description': 'Tests for insecure HTTP methods (PUT, DELETE, TRACE)',
+            'status': status,
+            'severity': severity,
+            'findings': findings,
+            'recommendations': recommendations
+        }
+    
+    def test_waf_detection(self) -> Dict[str, Any]:
+        """
+        Detect presence of Web Application Firewall (WAF) or CDN.
+        
+        Identifies protective infrastructure like Cloudflare, AWS WAF, Akamai, etc.
+        """
+        logging.info("Running WAF/CDN detection test...")
+        
+        findings = []
+        recommendations = []
+        severity = 'INFO'
+        status = 'PASS'
+        
+        waf_detected = False
+        detected_wafs = []
+        
+        try:
+            response = self._make_request('GET', self.target)
+            
+            if not response:
+                findings.append("Unable to connect to target")
+                status = 'ERROR'
+                return {
+                    'test_name': 'WAF/CDN Detection',
+                    'description': 'Identifies Web Application Firewall and CDN infrastructure',
+                    'status': status,
+                    'severity': severity,
+                    'findings': findings,
+                    'recommendations': recommendations
+                }
+            
+            headers = response.headers
+            
+            # WAF/CDN signatures
+            waf_signatures = {
+                'Cloudflare': [
+                    ('server', 'cloudflare'),
+                    ('cf-ray', None),
+                    ('cf-cache-status', None)
+                ],
+                'AWS WAF': [
+                    ('x-amzn-requestid', None),
+                    ('x-amz-cf-id', None),
+                    ('x-amz-apigw-id', None)
+                ],
+                'Akamai': [
+                    ('x-akamai-transformed', None),
+                    ('akamai-grn', None),
+                    ('x-cache-key', None)
+                ],
+                'Sucuri': [
+                    ('x-sucuri-id', None),
+                    ('x-sucuri-cache', None)
+                ],
+                'Imperva (Incapsula)': [
+                    ('x-iinfo', None),
+                    ('x-cdn', 'incapsula')
+                ],
+                'ModSecurity': [
+                    ('server', 'mod_security'),
+                ],
+                'F5 BIG-IP': [
+                    ('x-cnection', None),
+                    ('x-wa-info', None)
+                ],
+                'Barracuda': [
+                    ('barra_counter_session', None),
+                    ('barracuda', None)
+                ],
+                'Fortinet FortiWeb': [
+                    ('fortiwafsid', None),
+                ],
+                'Citrix NetScaler': [
+                    ('ns_af', None),
+                    ('citrix_ns_id', None)
+                ]
+            }
+            
+            # Check headers for WAF signatures
+            for waf_name, signatures in waf_signatures.items():
+                for header_name, header_value in signatures:
+                    header_name_lower = header_name.lower()
+                    if header_name_lower in [h.lower() for h in headers.keys()]:
+                        if header_value is None:
+                            detected_wafs.append(waf_name)
+                            waf_detected = True
+                            break
+                        else:
+                            actual_value = headers.get(header_name, '').lower()
+                            if header_value.lower() in actual_value:
+                                detected_wafs.append(waf_name)
+                                waf_detected = True
+                                break
+            
+            # Check cookies for WAF signatures
+            cookies = response.cookies
+            waf_cookies = {
+                '__cfduid': 'Cloudflare',
+                'incap_ses_': 'Imperva Incapsula',
+                'visid_incap_': 'Imperva Incapsula',
+                'nlbi_': 'Imperva Incapsula',
+                'BIGipServer': 'F5 BIG-IP',
+                'TS': 'F5 BIG-IP',
+                'citrix_ns_id': 'Citrix NetScaler',
+                'NSC_': 'Citrix NetScaler'
+            }
+            
+            for cookie_prefix, waf_name in waf_cookies.items():
+                for cookie in cookies.keys():
+                    if cookie.startswith(cookie_prefix):
+                        if waf_name not in detected_wafs:
+                            detected_wafs.append(waf_name)
+                            waf_detected = True
+            
+            # Additional checks
+            # Check Server header
+            server_header = headers.get('Server', '').lower()
+            if server_header:
+                findings.append(f"Server: {headers.get('Server')}")
+            
+            # Check for X-Powered-By
+            powered_by = headers.get('X-Powered-By', '')
+            if powered_by:
+                findings.append(f"X-Powered-By: {powered_by}")
+            
+            # Report findings
+            if waf_detected:
+                detected_wafs = list(set(detected_wafs))  # Remove duplicates
+                findings.append(f"🛡️ WAF/CDN detected: {', '.join(detected_wafs)}")
+                
+                # Add header evidence
+                for waf_name in detected_wafs:
+                    for header, value in headers.items():
+                        header_lower = header.lower()
+                        if any(sig in header_lower for sig in ['cf-', 'x-amz', 'akamai', 'sucuri', 'incap']):
+                            findings.append(f"  Evidence: {header}: {value[:50]}...")
+                            break
+                
+                recommendations.extend([
+                    f"WAF/CDN protection detected: {', '.join(detected_wafs)}",
+                    "This indicates the target has protective infrastructure",
+                    "Penetration testing may trigger WAF rules",
+                    "Consider coordinating with target's security team",
+                    "Some scan results may be influenced by WAF filtering"
+                ])
+            else:
+                findings.append("✗ No WAF/CDN detected")
+                findings.append("Target appears to be directly exposed to the internet")
+                recommendations.extend([
+                    "Consider implementing a Web Application Firewall (WAF)",
+                    "Consider using a CDN for DDoS protection and performance",
+                    "Popular options: Cloudflare, AWS WAF, Akamai, Imperva",
+                    "A WAF can help protect against common web attacks"
+                ])
+                severity = 'LOW'
+                status = 'VULNERABLE'
+            
+        except Exception as e:
+            logging.error(f"WAF detection test error: {str(e)}")
+            findings.append(f"Test error: {str(e)}")
+            status = 'ERROR'
+        
+        return {
+            'test_name': 'WAF/CDN Detection',
+            'description': 'Identifies Web Application Firewall and CDN infrastructure',
+            'status': status,
+            'severity': severity,
+            'findings': findings,
+            'recommendations': recommendations
+        }
     
     def _generate_report(self) -> Dict[str, Any]:
         """Generate final scan report."""

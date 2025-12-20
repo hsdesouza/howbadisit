@@ -1,356 +1,320 @@
 """
-HTML Report Generator for HowBadIsIt?
-Generates professional HTML reports from scan results
+HTML Report Generator - ULTRA SIMPLE VERSION
+No template parsing - just build HTML directly
 """
 
 import json
-import os
 from datetime import datetime
 from pathlib import Path
-from string import Template
-
-
-class HTMLReportGenerator:
-    """Generates professional HTML security assessment reports."""
-    
-    def __init__(self, template_dir="templates"):
-        """
-        Initialize the HTML report generator.
-        
-        Args:
-            template_dir: Directory containing HTML templates
-        """
-        self.template_dir = Path(template_dir)
-        self.template_path = self.template_dir / "report.html"
-        
-        if not self.template_path.exists():
-            raise FileNotFoundError(f"Template not found: {self.template_path}")
-    
-    def generate(self, scan_data, output_path=None):
-        """
-        Generate HTML report from scan data.
-        
-        Args:
-            scan_data: Dictionary containing scan results
-            output_path: Path to save HTML report (optional)
-            
-        Returns:
-            HTML content as string
-        """
-        # Load template
-        with open(self.template_path, 'r', encoding='utf-8') as f:
-            template_content = f.read()
-        
-        # Prepare data for template
-        template_data = self._prepare_template_data(scan_data)
-        
-        # Simple template rendering (Jinja2-style but using Python string methods)
-        html_content = self._render_template(template_content, template_data)
-        
-        # Save to file if path provided
-        if output_path:
-            output_file = Path(output_path)
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(html_content)
-            
-            print(f"[✓] HTML report saved to: {output_file}")
-        
-        return html_content
-    
-    def _prepare_template_data(self, scan_data):
-        """Prepare scan data for template rendering."""
-        # Extract basic info
-        target = scan_data.get('target', 'Unknown')
-        scan_date = scan_data.get('scan_date', datetime.now().isoformat())
-        security_score = scan_data.get('security_score', 0)
-        scanner_version = scan_data.get('scanner_version', '2.1.0')
-        summary = scan_data.get('summary', {})
-        results = scan_data.get('results', [])
-        
-        # Format scan date
-        try:
-            dt = datetime.fromisoformat(scan_date.replace('Z', '+00:00'))
-            formatted_date = dt.strftime('%B %d, %Y at %H:%M:%S')
-        except:
-            formatted_date = scan_date
-        
-        return {
-            'target': target,
-            'scan_date': formatted_date,
-            'security_score': round(security_score, 1),
-            'scanner_version': scanner_version,
-            'summary': summary,
-            'results': results
-        }
-    
-    def _render_template(self, template, data):
-        """
-        Simple template rendering without Jinja2.
-        Handles basic {{ variable }} and {% if/for %} syntax.
-        """
-        html = template
-        
-        # Replace simple variables
-        html = html.replace('{{ target }}', str(data['target']))
-        html = html.replace('{{ scan_date }}', str(data['scan_date']))
-        html = html.replace('{{ security_score }}', str(data['security_score']))
-        html = html.replace('{{ scanner_version }}', str(data['scanner_version']))
-        
-        # Summary variables
-        summary = data['summary']
-        html = html.replace('{{ summary.total_tests }}', str(summary.get('total_tests', 0)))
-        html = html.replace('{{ summary.critical }}', str(summary.get('critical', 0)))
-        html = html.replace('{{ summary.high }}', str(summary.get('high', 0)))
-        html = html.replace('{{ summary.medium }}', str(summary.get('medium', 0)))
-        html = html.replace('{{ summary.low }}', str(summary.get('low', 0)))
-        html = html.replace('{{ summary.passed }}', str(summary.get('passed', 0)))
-        
-        # Conditional rendering for summary counts
-        html = self._render_conditionals(html, data)
-        
-        # Render results loop
-        html = self._render_results_loop(html, data['results'])
-        
-        # Calculate progress circle
-        score = data['security_score']
-        circumference = 502.4  # 2 * π * 80
-        progress = (score / 100) * circumference
-        html = html.replace(
-            '{{ (security_score / 100 * 502.4) }}',
-            str(round(progress, 2))
-        )
-        
-        return html
-    
-    def _render_conditionals(self, html, data):
-        """Render if conditionals."""
-        summary = data['summary']
-        
-        # {% if summary.critical > 0 %}
-        if summary.get('critical', 0) > 0:
-            html = html.replace('{% if summary.critical > 0 %}', '')
-            html = html.replace('{% endif %}', '', 1)
-        else:
-            # Remove the block
-            start = html.find('{% if summary.critical > 0 %}')
-            if start != -1:
-                end = html.find('{% endif %}', start)
-                if end != -1:
-                    html = html[:start] + html[end + len('{% endif %}'):]
-        
-        # Similar for high, medium, low
-        for severity in ['high', 'medium', 'low']:
-            marker_start = f'{{% if summary.{severity} > 0 %}}'
-            marker_end = '{% endif %}'
-            
-            while marker_start in html:
-                if summary.get(severity, 0) > 0:
-                    html = html.replace(marker_start, '', 1)
-                    html = html.replace(marker_end, '', 1)
-                else:
-                    start = html.find(marker_start)
-                    if start != -1:
-                        end = html.find(marker_end, start)
-                        if end != -1:
-                            html = html[:start] + html[end + len(marker_end):]
-                        else:
-                            break
-                    else:
-                        break
-        
-        # Critical/high check
-        critical_high_total = summary.get('critical', 0) + summary.get('high', 0)
-        marker_start = '{% if summary.critical > 0 or summary.high > 0 %}'
-        marker_end = '{% else %}'
-        marker_endif = '{% endif %}'
-        
-        if marker_start in html:
-            start = html.find(marker_start)
-            else_pos = html.find(marker_end, start)
-            endif_pos = html.find(marker_endif, else_pos)
-            
-            if critical_high_total > 0:
-                # Keep if block, remove else block
-                if_block_start = start + len(marker_start)
-                if_block_content = html[if_block_start:else_pos]
-                html = html[:start] + if_block_content + html[endif_pos + len(marker_endif):]
-            else:
-                # Keep else block, remove if block
-                else_block_start = else_pos + len(marker_end)
-                else_block_content = html[else_block_start:endif_pos]
-                html = html[:start] + else_block_content + html[endif_pos + len(marker_endif):]
-        
-        return html
-    
-    def _render_results_loop(self, html, results):
-        """Render the results for loop."""
-        marker_start = '{% for result in results %}'
-        marker_end = '{% endfor %}'
-        
-        loop_start = html.find(marker_start)
-        loop_end = html.find(marker_end)
-        
-        if loop_start == -1 or loop_end == -1:
-            return html
-        
-        # Extract loop template
-        template_start = loop_start + len(marker_start)
-        loop_template = html[template_start:loop_end]
-        
-        # Render each result
-        rendered_results = []
-        for result in results:
-            rendered = self._render_result(loop_template, result)
-            rendered_results.append(rendered)
-        
-        # Replace loop with rendered content
-        html = html[:loop_start] + ''.join(rendered_results) + html[loop_end + len(marker_end):]
-        
-        return html
-    
-    def _render_result(self, template, result):
-        """Render a single result."""
-        html = template
-        
-        # Basic replacements
-        test_name = result.get('test_name', 'Unknown Test')
-        html = html.replace('{{ result.test_name }}', test_name)
-        html = html.replace('{{ result.description }}', result.get('description', ''))
-        html = html.replace('{{ result.severity }}', result.get('severity', 'INFO'))
-        html = html.replace('{{ result.status }}', result.get('status', 'UNKNOWN'))
-        
-        # Lowercase filters
-        html = html.replace('{{ result.severity|lower }}', result.get('severity', 'INFO').lower())
-        
-        # Replace filter
-        safe_id = test_name.replace(' ', '-').lower()
-        html = html.replace("{{ result.test_name|replace(' ', '-')|lower }}", safe_id)
-        
-        # Findings loop
-        findings = result.get('findings', [])
-        if findings:
-            findings_marker_start = '{% if result.findings %}'
-            findings_marker_end = '{% endif %}'
-            
-            findings_start = html.find(findings_marker_start)
-            findings_end = html.find(findings_marker_end, findings_start)
-            
-            if findings_start != -1 and findings_end != -1:
-                findings_content = html[findings_start + len(findings_marker_start):findings_end]
-                
-                # Render findings list
-                findings_html = self._render_list(findings_content, findings, 'finding')
-                html = html[:findings_start] + findings_html + html[findings_end + len(findings_marker_end):]
-        else:
-            # Remove findings block
-            findings_marker_start = '{% if result.findings %}'
-            findings_marker_end = '{% endif %}'
-            start = html.find(findings_marker_start)
-            if start != -1:
-                end = html.find(findings_marker_end, start)
-                if end != -1:
-                    html = html[:start] + html[end + len(findings_marker_end):]
-        
-        # Recommendations loop
-        recommendations = result.get('recommendations', [])
-        if recommendations:
-            rec_marker_start = '{% if result.recommendations %}'
-            rec_marker_end = '{% endif %}'
-            
-            rec_start = html.find(rec_marker_start)
-            rec_end = html.find(rec_marker_end, rec_start)
-            
-            if rec_start != -1 and rec_end != -1:
-                rec_content = html[rec_start + len(rec_marker_start):rec_end]
-                
-                # Render recommendations list
-                rec_html = self._render_list(rec_content, recommendations, 'rec')
-                html = html[:rec_start] + rec_html + html[rec_end + len(rec_marker_end):]
-        else:
-            # Remove recommendations block
-            rec_marker_start = '{% if result.recommendations %}'
-            rec_marker_end = '{% endif %}'
-            start = html.find(rec_marker_start)
-            if start != -1:
-                end = html.find(rec_marker_end, start)
-                if end != -1:
-                    html = html[:start] + html[end + len(rec_marker_end):]
-        
-        return html
-    
-    def _render_list(self, template, items, item_var):
-        """Render a list of items."""
-        loop_marker_start = f'{{% for {item_var} in '
-        loop_marker_end = '{% endfor %}'
-        
-        loop_start = template.find(loop_marker_start)
-        if loop_start == -1:
-            return template
-        
-        # Find end of for tag
-        for_tag_end = template.find('%}', loop_start)
-        loop_end = template.find(loop_marker_end, for_tag_end)
-        
-        if loop_end == -1:
-            return template
-        
-        # Extract item template
-        item_template = template[for_tag_end + 2:loop_end]
-        
-        # Render items
-        rendered_items = []
-        for item in items:
-            rendered = item_template.replace(f'{{{{ {item_var} }}}}', str(item))
-            rendered_items.append(rendered)
-        
-        # Replace loop
-        result = template[:loop_start] + ''.join(rendered_items) + template[loop_end + len(loop_marker_end):]
-        
-        return result
 
 
 def generate_html_report(json_file, output_file=None):
-    """
-    Convenience function to generate HTML report from JSON file.
+    """Generate HTML report from JSON - NO TEMPLATE PARSING!"""
     
-    Args:
-        json_file: Path to JSON scan results
-        output_file: Path to save HTML report (optional, auto-generated if None)
-    
-    Returns:
-        Path to generated HTML report
-    """
-    # Load JSON data
+    # Load data
     with open(json_file, 'r') as f:
-        scan_data = json.load(f)
+        data = json.load(f)
     
-    # Auto-generate output filename if not provided
+    # Extract data
+    target = data.get('target', 'Unknown')
+    scan_date = data.get('scan_date', datetime.now().isoformat())
+    security_score = round(data.get('security_score', 0), 1)
+    scanner_version = data.get('scanner_version', '2.1.0')
+    summary = data.get('summary', {})
+    results = data.get('results', [])
+    
+    # Format date
+    try:
+        dt = datetime.fromisoformat(scan_date.replace('Z', '+00:00'))
+        formatted_date = dt.strftime('%B %d, %Y at %H:%M:%S')
+    except:
+        formatted_date = scan_date
+    
+    # Build findings HTML
+    findings_html = ""
+    for result in results:
+        test_name = result.get('test_name', 'Unknown')
+        severity = result.get('severity', 'INFO').lower()
+        status = result.get('status', 'UNKNOWN')
+        description = result.get('description', '')
+        findings = result.get('findings', [])
+        recommendations = result.get('recommendations', [])
+        
+        safe_id = test_name.replace(' ', '-').lower()
+        badge_class = 'pass' if status == 'PASS' else 'info'
+        
+        findings_list = ""
+        if findings:
+            findings_items = ''.join([f"<li>{f}</li>\n" for f in findings])
+            findings_list = f"""
+                    <div class="detail-section">
+                        <div class="detail-title">Findings</div>
+                        <ul class="finding-list">
+                            {findings_items}
+                        </ul>
+                    </div>"""
+        
+        recommendations_box = ""
+        if recommendations:
+            rec_items = ''.join([f"<li>{r}</li>\n" for r in recommendations])
+            recommendations_box = f"""
+                    <div class="recommendations">
+                        <div class="recommendations-title">💡 Recommendations</div>
+                        <ul>
+                            {rec_items}
+                        </ul>
+                    </div>"""
+        
+        findings_html += f"""
+            <div class="card finding {severity}" id="{safe_id}">
+                <div class="finding-header">
+                    <div>
+                        <div class="finding-title">{test_name}</div>
+                        <div class="finding-description">{description}</div>
+                    </div>
+                    <div>
+                        <span class="badge badge-{severity}">{severity.upper()}</span>
+                        <span class="badge badge-{badge_class}">{status}</span>
+                    </div>
+                </div>
+                
+                <div class="finding-details">
+                    {findings_list}
+                    {recommendations_box}
+                </div>
+            </div>
+"""
+    
+    # Build severity links
+    severity_links = ""
+    for sev, count_key in [('critical', 'critical'), ('high', 'high'), ('medium', 'medium'), ('low', 'low')]:
+        count = summary.get(count_key, 0)
+        if count > 0:
+            severity_links += f'<li class="nav-item"><a href="#{sev}" class="nav-link">{sev.title()} ({count})</a></li>\n'
+    
+    # Score items
+    score_items_html = f"""
+                    <div class="score-item">
+                        <div class="score-item-value">{summary.get('total_tests', 0)}</div>
+                        <div class="score-item-label">Tests Run</div>
+                    </div>"""
+    
+    if summary.get('critical', 0) > 0:
+        score_items_html += f"""
+                    <div class="score-item">
+                        <div class="score-item-value severity-critical">{summary.get('critical', 0)}</div>
+                        <div class="score-item-label">Critical</div>
+                    </div>"""
+    
+    if summary.get('high', 0) > 0:
+        score_items_html += f"""
+                    <div class="score-item">
+                        <div class="score-item-value severity-high">{summary.get('high', 0)}</div>
+                        <div class="score-item-label">High</div>
+                    </div>"""
+    
+    if summary.get('medium', 0) > 0:
+        score_items_html += f"""
+                    <div class="score-item">
+                        <div class="score-item-value severity-medium">{summary.get('medium', 0)}</div>
+                        <div class="score-item-label">Medium</div>
+                    </div>"""
+    
+    if summary.get('low', 0) > 0:
+        score_items_html += f"""
+                    <div class="score-item">
+                        <div class="score-item-value severity-low">{summary.get('low', 0)}</div>
+                        <div class="score-item-label">Low</div>
+                    </div>"""
+    
+    score_items_html += f"""
+                    <div class="score-item">
+                        <div class="score-item-value" style="color: var(--success)">{summary.get('passed', 0)}</div>
+                        <div class="score-item-label">Passed</div>
+                    </div>"""
+    
+    # Score color
+    if security_score >= 80:
+        score_color = 'var(--success)'
+    elif security_score >= 60:
+        score_color = 'var(--warning)'
+    else:
+        score_color = 'var(--danger)'
+    
+    # Progress circle
+    progress = (security_score / 100) * 502.4
+    
+    # Critical/high warning
+    critical_high_total = summary.get('critical', 0) + summary.get('high', 0)
+    if critical_high_total > 0:
+        warning_box = f"""
+                <div class="recommendations mt-2">
+                    <div class="recommendations-title">⚠️ Immediate Action Required</div>
+                    <p>This assessment identified <strong>{critical_high_total}</strong> critical/high severity issues that require immediate attention. These vulnerabilities could be exploited by attackers to compromise the application or its data.</p>
+                </div>"""
+    else:
+        warning_box = """
+                <div style="background: #d1fae5; border: 1px solid #6ee7b7; border-radius: 8px; padding: 1rem; margin-top: 1rem;">
+                    <div style="font-weight: 600; margin-bottom: 0.5rem; color: #065f46;">✓ Good Security Posture</div>
+                    <p style="color: #065f46; margin: 0;">No critical or high severity vulnerabilities were identified during this assessment.</p>
+                </div>"""
+    
+    # Load CSS from template
+    with open('templates/report.html', 'r') as f:
+        template_content = f.read()
+    
+    # Extract CSS
+    css_start = template_content.find('<style>')
+    css_end = template_content.find('</style>') + len('</style>')
+    css_block = template_content[css_start:css_end]
+    
+    # Generate full HTML
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Assessment Report - {target}</title>
+    {css_block}
+</head>
+<body>
+    <div class="sidebar no-print">
+        <div class="toggle-container">
+            <button class="toggle-btn" onclick="toggleDarkMode()">
+                <span>🌓 Dark Mode</span>
+                <span id="mode-indicator">Off</span>
+            </button>
+        </div>
+        
+        <div class="nav-title">Report Sections</div>
+        <ul class="nav-list">
+            <li class="nav-item"><a href="#executive-summary" class="nav-link">Executive Summary</a></li>
+            <li class="nav-item"><a href="#findings" class="nav-link">Detailed Findings</a></li>
+        </ul>
+        
+        <div class="nav-title" style="margin-top: 2rem;">Findings by Severity</div>
+        <ul class="nav-list">
+            {severity_links}
+        </ul>
+    </div>
+    
+    <div class="main-content">
+        <div class="header">
+            <h1>Security Assessment Report</h1>
+            <div class="subtitle">Professional Web Application Security Analysis</div>
+            
+            <div class="header-meta">
+                <div class="meta-item">
+                    <div class="meta-label">Target</div>
+                    <div class="meta-value">{target}</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">Scan Date</div>
+                    <div class="meta-value">{formatted_date}</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">Scanner</div>
+                    <div class="meta-value">HowBadIsIt? v{scanner_version}</div>
+                </div>
+            </div>
+        </div>
+        
+        <section id="executive-summary" class="page-break">
+            <h2 class="mb-2">Executive Summary</h2>
+            
+            <div class="score-section">
+                <div class="score-circle">
+                    <svg width="180" height="180">
+                        <circle class="bg-circle" cx="90" cy="90" r="80"></circle>
+                        <circle class="progress-circle" cx="90" cy="90" r="80" 
+                                stroke-dasharray="{progress:.2f} 502.4"
+                                stroke-dashoffset="0"
+                                style="stroke: {score_color}"></circle>
+                    </svg>
+                    <div class="score-text">
+                        <div class="score-number" style="color: {score_color}">{security_score}</div>
+                        <div class="score-label">Security Score</div>
+                    </div>
+                </div>
+                
+                <div class="score-details">
+                    {score_items_html}
+                </div>
+            </div>
+            
+            <div class="card">
+                <h3 class="mb-2">Assessment Overview</h3>
+                <p>This report presents the findings of a comprehensive security assessment conducted on <strong>{target}</strong> on {formatted_date}. The assessment included {summary.get('total_tests', 0)} security tests covering common web application vulnerabilities and misconfigurations.</p>
+                {warning_box}
+            </div>
+        </section>
+        
+        <section id="findings" class="page-break">
+            <h2 class="mb-2">Detailed Findings</h2>
+            {findings_html}
+        </section>
+        
+        <div class="card no-print" style="text-align: center; margin-top: 3rem;">
+            <p style="color: var(--text-secondary);">
+                Report generated by <strong>HowBadIsIt? v{scanner_version}</strong><br>
+                Professional Web Application Security Scanner<br>
+                <a href="https://github.com/hsdesouza/howbadisit" target="_blank" style="color: var(--primary);">github.com/hsdesouza/howbadisit</a>
+            </p>
+            <p style="color: var(--danger); margin-top: 1rem; font-size: 0.875rem;">
+                ⚠️ This report contains confidential security information. Handle with care.
+            </p>
+        </div>
+    </div>
+    
+    <script>
+        function toggleDarkMode() {{
+            document.body.classList.toggle('dark-mode');
+            const indicator = document.getElementById('mode-indicator');
+            indicator.textContent = document.body.classList.contains('dark-mode') ? 'On' : 'Off';
+            localStorage.setItem('darkMode', document.body.classList.contains('dark-mode'));
+        }}
+        
+        if (localStorage.getItem('darkMode') === 'true') {{
+            document.body.classList.add('dark-mode');
+            document.getElementById('mode-indicator').textContent = 'On';
+        }}
+        
+        document.querySelectorAll('.nav-link').forEach(link => {{
+            link.addEventListener('click', function(e) {{
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                this.classList.add('active');
+            }});
+        }});
+    </script>
+</body>
+</html>"""
+    
+    # Save
     if not output_file:
-        json_path = Path(json_file)
-        output_file = json_path.parent / f"{json_path.stem}.html"
+        output_file = Path(json_file).parent / f"{Path(json_file).stem}.html"
     
-    # Generate report
-    generator = HTMLReportGenerator()
-    generator.generate(scan_data, output_file)
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(html)
     
+    print(f"[✓] HTML report saved to: {output_file}")
     return output_file
 
 
 if __name__ == '__main__':
     import sys
-    
     if len(sys.argv) < 2:
-        print("Usage: python html_report_generator.py <json_file> [output_file]")
+        print("Usage: python html_report_generator_SIMPLE.py <json_file> [output_file]")
         sys.exit(1)
     
-    json_file = sys.argv[1]
-    output_file = sys.argv[2] if len(sys.argv) > 2 else None
-    
     try:
-        result = generate_html_report(json_file, output_file)
+        result = generate_html_report(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)
         print(f"✓ HTML report generated: {result}")
     except Exception as e:
         print(f"✗ Error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
