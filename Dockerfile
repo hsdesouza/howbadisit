@@ -35,8 +35,10 @@ COPY requirements_docker.txt /app/requirements.txt
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
 
-# Copiar o scanner
+# Copiar o scanner e HTML generator
 COPY howbadisit.py /app/
+COPY html_report_generator.py /app/
+COPY templates/ /app/templates/
 
 # Criar diretório para relatórios
 RUN mkdir -p /app/reports

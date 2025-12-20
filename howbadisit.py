@@ -898,6 +898,7 @@ def main():
 Examples:
   %(prog)s -t example.com
   %(prog)s -t https://example.com -o json
+  %(prog)s -t example.com -o html -f report.html
   %(prog)s -t example.com -o json -f report.json
   %(prog)s -t example.com --timeout 15 --threads 10
 
@@ -913,9 +914,9 @@ For more information, visit: https://github.com/hsdesouza/howbadisit
     
     parser.add_argument(
         '-o', '--output',
-        choices=['json', 'text'],
+        choices=['json', 'text', 'html'],
         default='text',
-        help='Output format (default: text)'
+        help='Output format: json, text, or html (default: text)'
     )
     
     parser.add_argument(
@@ -977,6 +978,19 @@ For more information, visit: https://github.com/hsdesouza/howbadisit
         # Output results
         if args.output == 'json':
             output = json.dumps(report, indent=2)
+        elif args.output == 'html':
+            # Import HTML generator
+            try:
+                from html_report_generator import HTMLReportGenerator
+                generator = HTMLReportGenerator()
+                output = generator.generate(report)
+            except ImportError:
+                print("\n[!] HTML report generator not found. Falling back to JSON.")
+                output = json.dumps(report, indent=2)
+            except Exception as e:
+                print(f"\n[!] Error generating HTML report: {e}")
+                print("[!] Falling back to JSON output.")
+                output = json.dumps(report, indent=2)
         else:
             # Text format
             output = f"""
