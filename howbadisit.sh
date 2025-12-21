@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="howbadisit"
-IMAGE_TAG="1.0.0"
+IMAGE_TAG="2.3.0"
 REPORTS_DIR="${SCRIPT_DIR}/reports"
 
 # Cores

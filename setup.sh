@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ################################################################################
-# HowBadIsIt? - Automated Setup v2.1.0
+# HowBadIsIt? - Automated Setup v2.3.0
 # 
 # Automated installation for Ubuntu/Debian/Kali Linux
 # Funciona em: WSL, VM, Hardware
@@ -26,7 +26,7 @@ NC='\033[0m' # No Color
 # Variáveis globais
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="howbadisit"
-IMAGE_TAG="2.1.0"
+IMAGE_TAG="2.3.0"
 REPO_URL="git@github.com:hsdesouza/howbadisit.git"
 INSTALL_DIR="/opt/howbadisit"
 
@@ -40,7 +40,7 @@ print_banner() {
     cat << 'EOF'
 ╔═══════════════════════════════════════════════════════════════════════╗
 ║                                                                       ║
-║           HowBadIsIt? - AUTOMATED SETUP v2.1.0                 ║
+║           HowBadIsIt? - AUTOMATED SETUP v2.3.0                 ║
 ║                                                                       ║
 ║                    🐳 Docker + Git Automation                         ║
 ║                                                                       ║

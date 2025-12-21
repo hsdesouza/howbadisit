@@ -64,13 +64,13 @@ class HowBadIsIt:
             'target': self.target,
             'domain': self.domain,
             'scan_date': datetime.now().isoformat(),
-            'scanner_version': '2.2.0',
+            'scanner_version': '2.3.0',
             'scanner_name': 'HowBadIsIt?'
         }
         
         # User agent
         self.headers = {
-            'User-Agent': 'HowBadIsIt?/2.1.0 (Security Scanner)'
+            'User-Agent': 'HowBadIsIt?/2.3.0 (Security Scanner)'
         }
         
         logging.info(f"Initialized scanner for target: {self.target}")
@@ -1860,7 +1860,7 @@ def main():
     banner = """
 ╔═══════════════════════════════════════════════════════════════════╗
 ║                                                                   ║
-║                     HowBadIsIt? v2.2.0                            ║
+║                     HowBadIsIt? v2.3.0                            ║
 ║            Professional Web Security Scanner                      ║
 ║                                                                   ║
 ║            NEW: SQL Injection + XSS + Command Injection           ║
@@ -1927,7 +1927,7 @@ For more information, visit: https://github.com/hsdesouza/howbadisit
     parser.add_argument(
         '--version',
         action='version',
-        version='HowBadIsIt? v2.1.0'
+        version='HowBadIsIt? v2.3.0'
     )
     
     args = parser.parse_args()
