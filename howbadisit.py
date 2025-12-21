@@ -1858,14 +1858,11 @@ def main():
     
     # ASCII banner
     banner = """
-╔═══════════════════════════════════════════════════════════════════╗
-║                                                                   ║
-║                     HowBadIsIt? v2.3.0                            ║
-║            Professional Web Security Scanner                      ║
-║                                                                   ║
-║            NEW: SQL Injection + XSS + Command Injection           ║
-║                                                                   ║
-╚═══════════════════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════════════════════╗
+║                         HowBadIsIt?                           ║
+║                           v2.3.0                              ║
+║        Professional Web Application Security Scanner          ║
+╚═══════════════════════════════════════════════════════════════╝
     """
     
     print(banner)

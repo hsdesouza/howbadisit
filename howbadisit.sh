@@ -37,8 +37,9 @@ error() {
 # Banner
 show_banner() {
     echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║     HowBadIsIt? - Docker Helper                      ║"
-    echo "║     Facilita o uso do scanner via Docker                     ║"
+    echo "║                         HowBadIsIt?                           ║"
+    echo "║                           v2.3.0                              ║"
+    echo "║                         CLI Wrapper                           ║"
     echo "╚═══════════════════════════════════════════════════════════════╝"
     echo ""
 }
