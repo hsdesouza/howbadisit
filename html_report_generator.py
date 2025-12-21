@@ -1,11 +1,155 @@
 """
-HTML Report Generator - ULTRA SIMPLE VERSION
-No template parsing - just build HTML directly
+HTML Report Generator v2.3.0 - WITH RECOMMENDED ACTIONS
+Maintains approved v2.1.2 layout + adds intelligent recommendations
 """
 
 import json
 from datetime import datetime
 from pathlib import Path
+
+
+def generate_recommended_actions(results, summary):
+    """Generate intelligent, contextual recommended actions using same card style as findings"""
+    
+    critical = summary.get('critical', 0)
+    high = summary.get('high', 0)
+    medium = summary.get('medium', 0)
+    low = summary.get('low', 0)
+    
+    vulnerable = [r for r in results if r.get('status') == 'VULNERABLE']
+    recommendations = []
+    
+    # CRITICAL
+    if critical > 0:
+        critical_tests = [r['test_name'] for r in vulnerable if r.get('severity') == 'CRITICAL']
+        recommendations.append({
+            'priority': 'CRITICAL',
+            'text': f"Immediate action required: {critical} critical {'vulnerability' if critical == 1 else 'vulnerabilities'} detected ({', '.join(critical_tests[:2])}{'...' if len(critical_tests) > 2 else ''}). These represent severe security risks that could lead to complete system compromise, data breaches, or unauthorized access. Address these within 24-48 hours."
+        })
+    
+    # HIGH
+    if high > 0:
+        high_tests = [r['test_name'] for r in vulnerable if r.get('severity') == 'HIGH']
+        has_info_disclosure = any('information disclosure' in t.lower() for t in high_tests)
+        
+        if has_info_disclosure:
+            recommendations.append({
+                'priority': 'HIGH',
+                'text': "Information disclosure vulnerabilities were detected, potentially exposing sensitive data such as credentials, configuration files, or database backups. While not immediately exploitable remotely, this creates significant risk if attackers gain initial access. Remediation is straightforward (removing exposed files) and should be completed within one week to reduce your attack surface."
+            })
+        else:
+            recommendations.append({
+                'priority': 'HIGH',
+                'text': f"{high} high-severity {'issue' if high == 1 else 'issues'} detected. These vulnerabilities could enable attackers to compromise user accounts, steal data, or perform unauthorized actions. Schedule remediation within 1-2 weeks to prevent potential exploitation."
+            })
+    
+    # MEDIUM - contextual
+    if medium > 0:
+        medium_tests = [r['test_name'] for r in vulnerable if r.get('severity') == 'MEDIUM']
+        has_ssl = any('ssl' in t.lower() or 'tls' in t.lower() for t in medium_tests)
+        has_headers = any('header' in t.lower() for t in medium_tests)
+        has_csrf = any('csrf' in t.lower() or 'form' in t.lower() for t in medium_tests)
+        
+        if has_ssl:
+            recommendations.append({
+                'priority': 'MEDIUM',
+                'text': "SSL/TLS certificate issues detected (expiring soon or misconfiguration). While current encryption remains strong, certificate expiration would cause service disruption and security warnings for users. Schedule certificate renewal within the next 2-4 weeks to ensure continuous secure connectivity."
+            })
+        
+        if has_headers:
+            recommendations.append({
+                'priority': 'MEDIUM',
+                'text': "Missing security headers identified. While not critical vulnerabilities on their own, these headers provide defense-in-depth protection against common attacks like XSS, clickjacking, and information leakage. It's not a critical vulnerability, but it is an unnecessary and inexpensive risk to fix — addressing these headers now reduces exposure, improves compliance, and helps prevent bigger problems later."
+            })
+        
+        if has_csrf:
+            recommendations.append({
+                'priority': 'MEDIUM',
+                'text': "Forms without CSRF protection detected. This could allow attackers to trick authenticated users into performing unwanted actions. Implementation typically requires 4-8 hours of development work and significantly improves application security posture. Plan remediation within the current sprint or next maintenance window."
+            })
+        
+        if not (has_ssl or has_headers or has_csrf):
+            recommendations.append({
+                'priority': 'MEDIUM',
+                'text': f"{medium} medium-severity findings require attention. While not immediately critical, these issues weaken your security posture and could be chained with other vulnerabilities in sophisticated attacks. Address within 30 days as part of regular security maintenance."
+            })
+    
+    # LOW
+    if low > 0:
+        low_tests = [r['test_name'] for r in vulnerable if r.get('severity') == 'LOW']
+        has_waf = any('waf' in t.lower() or 'cdn' in t.lower() for t in low_tests)
+        has_tech_disclosure = any('technology' in t.lower() for t in low_tests)
+        
+        if has_waf:
+            recommendations.append({
+                'priority': 'LOW',
+                'text': "No Web Application Firewall (WAF) detected. While not a vulnerability itself, implementing a WAF (such as Cloudflare, AWS WAF, or similar) provides an additional security layer that can block common attacks, provide DDoS protection, and improve overall resilience. Consider this for the next infrastructure upgrade cycle."
+            })
+        
+        if has_tech_disclosure:
+            recommendations.append({
+                'priority': 'INFO',
+                'text': "Server technology information is being exposed in HTTP headers. While this doesn't create an immediate vulnerability, it provides attackers with reconnaissance information. Consider obfuscating or removing server banners as a best practice to reduce information leakage."
+            })
+    
+    # POSITIVE
+    if critical == 0 and high == 0:
+        if medium > 0:
+            recommendations.append({
+                'priority': 'POSITIVE',
+                'text': f"Good security posture overall — no critical or high-severity vulnerabilities detected. The {medium} medium-severity findings and {low} low-severity findings represent opportunities for security hardening rather than immediate threats. Continue with planned remediation schedule and maintain current security practices."
+            })
+        elif medium == 0 and low > 0:
+            recommendations.append({
+                'priority': 'POSITIVE',
+                'text': f"Excellent security posture — only {low} low-severity findings detected, primarily related to best practices and defense-in-depth measures. Your application demonstrates strong security fundamentals. Address these items as time permits to achieve even stronger hardening."
+            })
+        elif medium == 0 and low == 0:
+            recommendations.append({
+                'priority': 'POSITIVE',
+                'text': "Outstanding security posture — all tests passed successfully with no vulnerabilities detected. Your application demonstrates excellent security practices. Continue regular security assessments and maintain current security standards to ensure ongoing protection."
+            })
+    
+    # Build HTML - NO TITLE, just badge and text
+    html = '<section id="recommended-actions" class="page-break">\n'
+    html += '    <h2 class="mb-2">Recommended Actions</h2>\n'
+    
+    for rec in recommendations:
+        priority = rec['priority']
+        text = rec['text']
+        
+        # Map priority to severity classes
+        severity_class = priority.lower()
+        if priority == 'POSITIVE':
+            severity_class = 'info'
+            badge_class = 'pass'
+            badge_text = 'POSITIVE'
+        elif priority == 'INFO':
+            severity_class = 'info'
+            badge_class = 'info'
+            badge_text = 'INFO'
+        else:
+            badge_class = priority.lower()
+            badge_text = priority.upper()
+        
+        # NO finding-title, just badge in header and text in details
+        html += f'''    <div class="card finding {severity_class}">
+        <div class="finding-header">
+            <div></div>
+            <div>
+                <span class="badge badge-{badge_class}">{badge_text}</span>
+            </div>
+        </div>
+        
+        <div class="finding-details">
+            <p style="margin: 0; line-height: 1.7;">{text}</p>
+        </div>
+    </div>\n'''
+    
+    html += '</section>\n'
+    
+    return html
+
 
 
 def generate_html_report(json_file, output_file=None):
@@ -184,21 +328,15 @@ def generate_html_report(json_file, output_file=None):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Security Assessment Report - {target}</title>
+    <title>Security Report - {target}</title>
     {css_block}
 </head>
 <body>
     <div class="sidebar no-print">
-        <div class="toggle-container">
-            <button class="toggle-btn" onclick="toggleDarkMode()">
-                <span>🌓 Dark Mode</span>
-                <span id="mode-indicator">Off</span>
-            </button>
-        </div>
-        
         <div class="nav-title">Report Sections</div>
         <ul class="nav-list">
             <li class="nav-item"><a href="#executive-summary" class="nav-link">Executive Summary</a></li>
+            <li class="nav-item"><a href="#recommended-actions" class="nav-link">Recommended Actions</a></li>
             <li class="nav-item"><a href="#findings" class="nav-link">Detailed Findings</a></li>
         </ul>
         
@@ -209,26 +347,6 @@ def generate_html_report(json_file, output_file=None):
     </div>
     
     <div class="main-content">
-        <div class="header">
-            <h1>Security Assessment Report</h1>
-            <div class="subtitle">Professional Web Application Security Analysis</div>
-            
-            <div class="header-meta">
-                <div class="meta-item">
-                    <div class="meta-label">Target</div>
-                    <div class="meta-value">{target}</div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Scan Date</div>
-                    <div class="meta-value">{formatted_date}</div>
-                </div>
-                <div class="meta-item">
-                    <div class="meta-label">Scanner</div>
-                    <div class="meta-value">HowBadIsIt? v{scanner_version}</div>
-                </div>
-            </div>
-        </div>
-        
         <section id="executive-summary" class="page-break">
             <h2 class="mb-2">Executive Summary</h2>
             
@@ -259,6 +377,9 @@ def generate_html_report(json_file, output_file=None):
             </div>
         </section>
         
+        <!-- Recommended Actions Section - Outside card like Executive Summary -->
+        {generate_recommended_actions(results, summary)}
+        
         <section id="findings" class="page-break">
             <h2 class="mb-2">Detailed Findings</h2>
             {findings_html}
@@ -266,29 +387,13 @@ def generate_html_report(json_file, output_file=None):
         
         <div class="card no-print" style="text-align: center; margin-top: 3rem;">
             <p style="color: var(--text-secondary);">
-                Report generated by <strong>HowBadIsIt? v{scanner_version}</strong><br>
-                Professional Web Application Security Scanner<br>
-                <a href="https://github.com/hsdesouza/howbadisit" target="_blank" style="color: var(--primary);">github.com/hsdesouza/howbadisit</a>
-            </p>
-            <p style="color: var(--danger); margin-top: 1rem; font-size: 0.875rem;">
-                ⚠️ This report contains confidential security information. Handle with care.
+                Copyright © 2026 Winfra. All rights reserved.
             </p>
         </div>
     </div>
     
     <script>
-        function toggleDarkMode() {{
-            document.body.classList.toggle('dark-mode');
-            const indicator = document.getElementById('mode-indicator');
-            indicator.textContent = document.body.classList.contains('dark-mode') ? 'On' : 'Off';
-            localStorage.setItem('darkMode', document.body.classList.contains('dark-mode'));
-        }}
-        
-        if (localStorage.getItem('darkMode') === 'true') {{
-            document.body.classList.add('dark-mode');
-            document.getElementById('mode-indicator').textContent = 'On';
-        }}
-        
+        // Smooth scroll navigation
         document.querySelectorAll('.nav-link').forEach(link => {{
             link.addEventListener('click', function(e) {{
                 e.preventDefault();
