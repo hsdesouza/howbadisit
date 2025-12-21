@@ -191,8 +191,8 @@ def generate_html_report(json_file, output_file=None):
         safe_id = test_name.replace(' ', '-').replace('/', '-').lower()
         badge_class = 'pass' if status == 'PASS' else 'info'
         
-        # Track severity groups
-        if severity in severity_groups and status != 'PASS':
+        # Track severity groups (only VULNERABLE findings for sidebar navigation)
+        if severity in severity_groups and status == 'VULNERABLE':
             severity_groups[severity].append(safe_id)
         
         findings_list = ""
