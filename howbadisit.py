@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HowBadIsIt? - Professional Web Application Security Scanner
-Version: 2.4.0 FINAL - Phase 4A Complete
+Version: 2.4.1 - Bugfix Release
 Author: Security Research Team
 License: MIT
 
@@ -9,7 +9,12 @@ A comprehensive web security scanner designed for penetration testers,
 red teams, and MSSPs. Performs automated security assessments and
 generates professional reports with visual evidence.
 
-NEW in v2.4.0 FINAL - Phase 4A Complete (Authentication Security):
+BUGFIX in v2.4.1 (2024-12-22):
+- Fixed Test 27 (Encryption in Transit): TLS version check now works with all certificates
+- Issue: Certificate verification was causing false positives
+- Solution: Disabled cert verification for TLS version testing (cert validation done in Test 5)
+
+Phase 4A Complete (v2.4.0 - Authentication Security):
 DELIVERY 1 (Core Authentication):
   - Brute Force Protection (HIGH)
   - Session Management Security (HIGH)
@@ -4526,6 +4531,8 @@ class HowBadIsIt:
                     # Try TLS 1.0 (should fail - banned in PCI-DSS v4.0)
                     try:
                         context_tls10 = ssl.SSLContext(ssl.PROTOCOL_TLSv1)
+                        context_tls10.check_hostname = False
+                        context_tls10.verify_mode = ssl.CERT_NONE
                         with socket.create_connection((hostname, port), timeout=5) as sock:
                             with context_tls10.wrap_socket(sock, server_hostname=hostname) as ssock:
                                 issues_found.append("TLS 1.0 still supported")
@@ -4538,6 +4545,8 @@ class HowBadIsIt:
                     # Try TLS 1.1 (should fail - banned in PCI-DSS v4.0)
                     try:
                         context_tls11 = ssl.SSLContext(ssl.PROTOCOL_TLSv1_1)
+                        context_tls11.check_hostname = False
+                        context_tls11.verify_mode = ssl.CERT_NONE
                         with socket.create_connection((hostname, port), timeout=5) as sock:
                             with context_tls11.wrap_socket(sock, server_hostname=hostname) as ssock:
                                 issues_found.append("TLS 1.1 still supported")
@@ -4551,6 +4560,11 @@ class HowBadIsIt:
                     try:
                         context_tls12 = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                         context_tls12.minimum_version = ssl.TLSVersion.TLSv1_2
+                        # Disable certificate verification for this test
+                        # We only care about TLS version support, not cert validation
+                        # (cert validation is done in test_ssl_tls_configuration)
+                        context_tls12.check_hostname = False
+                        context_tls12.verify_mode = ssl.CERT_NONE
                         
                         with socket.create_connection((hostname, port), timeout=5) as sock:
                             with context_tls12.wrap_socket(sock, server_hostname=hostname) as ssock:
