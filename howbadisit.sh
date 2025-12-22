@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="howbadisit"
-IMAGE_TAG="2.3.0"
+IMAGE_TAG="2.4.2"
 REPORTS_DIR="${SCRIPT_DIR}/reports"
 
 # Cores
@@ -38,7 +38,7 @@ error() {
 show_banner() {
     echo "╔═══════════════════════════════════════════════════════════════╗"
     echo "║                         HowBadIsIt?                           ║"
-    echo "║                           v2.3.0                              ║"
+    echo "║                           v2.4.2                              ║"
     echo "║                         CLI Wrapper                           ║"
     echo "╚═══════════════════════════════════════════════════════════════╝"
     echo ""
@@ -140,6 +140,33 @@ interactive_scan() {
     fi
 }
 
+# Gerar relatório HTML
+generate_report() {
+    check_image
+    
+    if [ $# -lt 1 ]; then
+        error "Usage: $0 report <json_file> [html_file]"
+        exit 1
+    fi
+    
+    json_file="$1"
+    html_file="${2:-${json_file%.json}.html}"
+    
+    if [ ! -f "${json_file}" ]; then
+        error "JSON file not found: ${json_file}"
+        exit 1
+    fi
+    
+    info "Generating HTML report..."
+    
+    docker run --rm \
+        -v "${REPORTS_DIR}:/app/reports" \
+        "${IMAGE_NAME}:latest" \
+        python3 html_report_generator.py "/app/reports/$(basename ${json_file})" "/app/reports/$(basename ${html_file})"
+    
+    success "HTML report generated: ${html_file}"
+}
+
 # Shell interativo no container
 shell() {
     check_image
@@ -221,6 +248,7 @@ COMMANDS:
     rebuild             Rebuild image (no cache)
     scan                Run interactive scan
     run [args]          Run scanner with custom arguments
+    report <json> [html] Generate HTML report from JSON
     shell               Open interactive shell in container
     
     list                List saved reports
@@ -241,6 +269,10 @@ EXAMPLES:
     # Direct scan
     $0 run -t example.com
     $0 run -t example.com -o json -f /app/reports/report.json
+    
+    # Generate HTML report
+    $0 report reports/report.json
+    $0 report reports/report.json reports/custom_report.html
     
     # Custom options
     $0 run -t example.com --timeout 30 -v
@@ -280,6 +312,11 @@ main() {
             check_docker
             shift
             run_scan "$@"
+            ;;
+        report)
+            check_docker
+            shift
+            generate_report "$@"
             ;;
         shell)
             check_docker
