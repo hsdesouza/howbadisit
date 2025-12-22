@@ -1,5 +1,15 @@
 """
-HTML Report Generator v2.3.0 - WITH RECOMMENDED ACTIONS
+HTML Report Generator v2.4.0 - FIXED SIDEBAR BUG
+BUG FIX (Dec 21, 2024): Sidebar severity links now work correctly
+
+WHAT WAS FIXED:
+- Line 195: Changed 'status != PASS' to 'status == VULNERABLE'
+- This ensures only VULNERABLE findings appear in sidebar navigation
+- Clicking "High", "Medium", "Low", "Critical" now scrolls correctly
+
+Previously: Added all non-PASS findings (INFO, ERROR, etc.)
+Now: Only adds VULNERABLE findings to severity groups
+
 Maintains approved v2.1.2 layout + adds intelligent recommendations
 """
 
@@ -393,12 +403,17 @@ def generate_html_report(json_file, output_file=None):
     </div>
     
     <script>
-        // Smooth scroll navigation
+        // Smooth scroll navigation - FIXED to handle special characters in IDs
         document.querySelectorAll('.nav-link').forEach(link => {{
             link.addEventListener('click', function(e) {{
                 e.preventDefault();
-                const target = document.querySelector(this.getAttribute('href'));
-                target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                // Get href and remove the # to get the ID
+                const targetId = this.getAttribute('href').substring(1);
+                // Use getElementById instead of querySelector to avoid CSS selector issues with special chars
+                const target = document.getElementById(targetId);
+                if (target) {{
+                    target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                }}
                 document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
                 this.classList.add('active');
             }});
