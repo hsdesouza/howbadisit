@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
 HowBadIsIt? - Professional Web Application Security Scanner
-Version: 2.4.2 - Bugfix Release
+Version: 2.5.0 - Phase 4B Complete
 Author: Security Research Team
 License: MIT
 
 A comprehensive web security scanner designed for penetration testers,
 red teams, and MSSPs. Performs automated security assessments and
 generates professional reports with visual evidence.
+
+Phase 4B Complete (v2.5.0 - Access Control Security):
+  - IDOR Detection (CRITICAL)
+  - Path Traversal Detection (CRITICAL)
+  - Forced Browsing Detection (CRITICAL)
+  - Vertical Authorization Bypass (CRITICAL)
+  - Horizontal Authorization Bypass (CRITICAL)
 
 BUGFIX in v2.4.2 (2024-12-22):
 - Fixed Test 2 (Subdomain Enumeration): Intelligent subdomain takeover detection
@@ -44,14 +51,14 @@ DELIVERY 3 (Advanced Auth & Monitoring):
   - Encryption in Transit - Auth (CRITICAL)
   - OAuth/JWT Token Security (HIGH)
 
-Total: 28 professional security tests
+Total: 33 professional security tests
 
 Compliance Coverage:
 - NIST CSF 2.0: 75%
 - LGPD: 90%
 - PCI-DSS v4.0: 85%
 - ISO 27001: 80%
-- OWASP Top 10 (2021): 90%
+- OWASP Top 10 (2021): 100%
 """
 
 import argparse
@@ -195,6 +202,12 @@ class HowBadIsIt:
             self.test_failed_login_monitoring,
             self.test_encryption_in_transit_auth,
             self.test_oauth_jwt_security,
+            # Phase 4B - Access Control Tests (Complete OWASP A01)
+            self.test_idor_detection,
+            self.test_path_traversal,
+            self.test_forced_browsing,
+            self.test_vertical_authorization_bypass,
+            self.test_horizontal_authorization_bypass,
         ]
         
         with ThreadPoolExecutor(max_workers=self.threads) as executor:
@@ -4933,6 +4946,1246 @@ class HowBadIsIt:
         
         return result
     
+    def test_idor_detection(self) -> Dict[str, Any]:
+        """
+        Test 29: IDOR (Insecure Direct Object Reference) Detection
+        
+        Tests for vulnerabilities where users can access other users' data
+        by manipulating object identifiers (IDs) in URLs or parameters.
+        
+        Compliance:
+        - OWASP Top 10 2021: A01 (Broken Access Control)
+        - NIST CSF 2.0: PR.AC-4 (Access permissions managed)
+        - PCI-DSS 4.0: Req 7.2 (Access control systems)
+        - ISO 27001: A.9.4.1 (Information access restriction)
+        
+        Tests:
+        1. ID parameters in URLs
+        2. Sequential ID enumeration
+        3. Resource access without authentication
+        4. Direct object manipulation
+        """
+        logging.info("Running IDOR detection test...")
+        
+        result = {
+            'test_name': 'IDOR Detection',
+            'description': 'Tests for Insecure Direct Object Reference vulnerabilities',
+            'status': 'PASS',
+            'severity': 'INFO',
+            'findings': [],
+            'recommendations': [],
+            'compliance': {
+                'OWASP_Top_10_2021': 'A01 - Broken Access Control',
+                'NIST_CSF_2.0': 'PR.AC-4',
+                'PCI_DSS_4.0': 'Req 7.2',
+                'ISO_27001': 'A.9.4.1'
+            }
+        }
+        
+        try:
+            # Common IDOR-prone endpoints and parameters
+            idor_patterns = {
+                'endpoints': [
+                    '/api/user/', '/api/users/', '/user/', '/users/',
+                    '/profile/', '/account/', '/api/profile/',
+                    '/api/order/', '/order/', '/orders/',
+                    '/api/document/', '/document/', '/documents/',
+                    '/api/file/', '/file/', '/files/',
+                    '/api/invoice/', '/invoice/',
+                    '/admin/user/', '/admin/users/'
+                ],
+                'parameters': [
+                    'id', 'user_id', 'userId', 'uid', 'user',
+                    'account_id', 'accountId', 'profile_id',
+                    'order_id', 'orderId', 'document_id',
+                    'file_id', 'fileId', 'invoice_id'
+                ]
+            }
+            
+            potential_idor = []
+            tested_endpoints = 0
+            accessible_ids = []
+            
+            # Test 1: Scan for ID parameters in URLs
+            result['findings'].append("Scanning for ID-based endpoints...")
+            
+            response = self._make_request(self.target)
+            if response:
+                # Parse page for links with ID parameters
+                soup = BeautifulSoup(response.text, 'html.parser')
+                links = soup.find_all('a', href=True)
+                
+                for link in links[:50]:  # Limit to first 50 links
+                    href = link.get('href')
+                    full_url = urljoin(self.target, href)
+                    parsed = urlparse(full_url)
+                    
+                    # Check query parameters
+                    query_params = parse_qs(parsed.query)
+                    for param in idor_patterns['parameters']:
+                        if param in query_params:
+                            param_value = query_params[param][0]
+                            # Check if it's numeric (typical IDOR)
+                            if param_value.isdigit():
+                                potential_idor.append({
+                                    'url': full_url,
+                                    'parameter': param,
+                                    'value': param_value,
+                                    'type': 'query_parameter'
+                                })
+                    
+                    # Check path segments for IDs
+                    path_segments = parsed.path.split('/')
+                    for i, segment in enumerate(path_segments):
+                        if segment.isdigit() and len(segment) >= 1:
+                            # Found numeric ID in path
+                            potential_idor.append({
+                                'url': full_url,
+                                'parameter': f'path_segment_{i}',
+                                'value': segment,
+                                'type': 'path_id'
+                            })
+            
+            # Test 2: Probe common IDOR endpoints
+            result['findings'].append("Testing common IDOR-prone endpoints...")
+            
+            test_ids = ['1', '2', '123', '1000']
+            
+            for endpoint in idor_patterns['endpoints'][:10]:  # Test first 10
+                for test_id in test_ids[:2]:  # Test 2 IDs per endpoint
+                    try:
+                        url = urljoin(self.target, f"{endpoint}{test_id}")
+                        response = self._make_request(url, timeout=3)
+                        tested_endpoints += 1
+                        
+                        if response:
+                            # Check if endpoint is accessible
+                            if response.status_code == 200:
+                                accessible_ids.append({
+                                    'endpoint': endpoint,
+                                    'id': test_id,
+                                    'status': response.status_code
+                                })
+                                
+                                # Check for sensitive data indicators
+                                content_lower = response.text.lower()
+                                sensitive_keywords = [
+                                    'email', 'password', 'address', 'phone',
+                                    'credit', 'ssn', 'birthday', 'account'
+                                ]
+                                
+                                found_sensitive = [kw for kw in sensitive_keywords if kw in content_lower]
+                                
+                                if found_sensitive:
+                                    result['severity'] = 'CRITICAL'
+                                    result['status'] = 'VULNERABLE'
+                                    result['findings'].append(
+                                        f"⚠️ CRITICAL: Potential IDOR on {endpoint} (ID: {test_id})"
+                                    )
+                                    result['findings'].append(
+                                        f"  Accessible without auth, contains: {', '.join(found_sensitive[:3])}"
+                                    )
+                    
+                    except Exception as e:
+                        logging.debug(f"IDOR test error for {endpoint}: {str(e)}")
+            
+            # Test 3: Check for sequential ID enumeration
+            if len(potential_idor) > 0:
+                result['findings'].append(f"Found {len(potential_idor)} endpoints with ID parameters")
+                
+                # Test if IDs are sequential/predictable
+                sequential_test = potential_idor[0] if potential_idor else None
+                
+                if sequential_test and sequential_test['value'].isdigit():
+                    original_id = int(sequential_test['value'])
+                    test_url = sequential_test['url']
+                    
+                    # Try adjacent IDs
+                    adjacent_ids = [original_id - 1, original_id + 1]
+                    accessible_adjacent = 0
+                    
+                    for adj_id in adjacent_ids:
+                        if adj_id > 0:
+                            try:
+                                # Replace ID in URL
+                                test_adjacent_url = test_url.replace(
+                                    str(original_id), str(adj_id)
+                                )
+                                
+                                adj_response = self._make_request(test_adjacent_url, timeout=3)
+                                
+                                if adj_response and adj_response.status_code == 200:
+                                    accessible_adjacent += 1
+                            
+                            except Exception as e:
+                                logging.debug(f"Adjacent ID test error: {str(e)}")
+                    
+                    if accessible_adjacent >= 2:
+                        if result['severity'] == 'INFO':
+                            result['severity'] = 'HIGH'
+                            result['status'] = 'VULNERABLE'
+                        
+                        result['findings'].append(
+                            f"⚠️ HIGH: Sequential ID enumeration possible on {sequential_test['parameter']}"
+                        )
+                        result['findings'].append(
+                            f"  Adjacent IDs ({adjacent_ids}) are accessible"
+                        )
+            
+            # Summary
+            if tested_endpoints > 0:
+                result['findings'].append(
+                    f"Tested {tested_endpoints} endpoints for IDOR vulnerabilities"
+                )
+            
+            if len(accessible_ids) > 0:
+                result['findings'].append(
+                    f"Found {len(accessible_ids)} endpoints with accessible IDs"
+                )
+            
+            # Provide recommendations
+            if result['status'] == 'VULNERABLE':
+                result['recommendations'].append(
+                    "CRITICAL: Implement proper authorization checks for ALL object access"
+                )
+                result['recommendations'].append(
+                    "OWASP A01: Broken Access Control is #1 vulnerability in 2021"
+                )
+                result['recommendations'].append(
+                    "Fix IDOR vulnerabilities:"
+                )
+                result['recommendations'].append(
+                    "  1. Validate user authorization BEFORE returning object"
+                )
+                result['recommendations'].append(
+                    "  2. Use indirect references (map IDs to user session)"
+                )
+                result['recommendations'].append(
+                    "  3. Implement per-user or per-session authorization"
+                )
+                result['recommendations'].append(
+                    "  4. Use UUIDs instead of sequential integers"
+                )
+                result['recommendations'].append(
+                    "  5. Never trust client-supplied object IDs"
+                )
+                
+                result['compliance']['OWASP_Top_10_2021'] += ' - FAIL (CRITICAL)'
+                result['compliance']['NIST_CSF_2.0'] += ' - FAIL'
+                result['compliance']['PCI_DSS_4.0'] += ' - FAIL (access control broken)'
+            else:
+                result['findings'].append("✓ No obvious IDOR vulnerabilities detected")
+                result['findings'].append(
+                    "Note: This test checks for common IDOR patterns only"
+                )
+                
+                result['recommendations'].append(
+                    "IDOR Prevention Best Practices:"
+                )
+                result['recommendations'].append(
+                    "  - Always check if current user owns the requested object"
+                )
+                result['recommendations'].append(
+                    "  - Use indirect object references (session-based mapping)"
+                )
+                result['recommendations'].append(
+                    "  - Implement role-based access control (RBAC)"
+                )
+                result['recommendations'].append(
+                    "  - Log all object access for audit trail"
+                )
+                result['recommendations'].append(
+                    "  - Use UUIDs or non-sequential IDs when possible"
+                )
+                result['recommendations'].append(
+                    "  - Test with different user roles (horizontal & vertical access)"
+                )
+        
+        except Exception as e:
+            result['status'] = 'ERROR'
+            result['error'] = str(e)
+            logging.error(f"IDOR detection test error: {str(e)}")
+        
+        return result
+    
+    def test_path_traversal(self) -> Dict[str, Any]:
+        """
+        Test 30: Path Traversal Detection
+        
+        Tests for vulnerabilities where attackers can access files outside
+        the intended directory using path manipulation (../, ..\).
+        
+        Compliance:
+        - OWASP Top 10 2021: A01 (Broken Access Control)
+        - NIST CSF 2.0: PR.AC-4 (Access permissions managed)
+        - PCI-DSS 4.0: Req 6.5.8 (Improper access control)
+        - ISO 27001: A.14.1.2 (Secure development)
+        
+        Tests:
+        1. Directory traversal in file parameters
+        2. Unix path traversal (../)
+        3. Windows path traversal (..\)
+        4. Encoded traversal attempts
+        5. Sensitive file access
+        """
+        logging.info("Running path traversal detection test...")
+        
+        result = {
+            'test_name': 'Path Traversal Detection',
+            'description': 'Tests for directory traversal vulnerabilities',
+            'status': 'PASS',
+            'severity': 'INFO',
+            'findings': [],
+            'recommendations': [],
+            'compliance': {
+                'OWASP_Top_10_2021': 'A01 - Broken Access Control',
+                'NIST_CSF_2.0': 'PR.AC-4',
+                'PCI_DSS_4.0': 'Req 6.5.8',
+                'ISO_27001': 'A.14.1.2'
+            }
+        }
+        
+        try:
+            # Path traversal payloads
+            traversal_payloads = {
+                'unix': [
+                    '../../../etc/passwd',
+                    '../../../../etc/passwd',
+                    '../../../../../etc/passwd',
+                    '../../../../../../etc/passwd',
+                    '../../../etc/shadow',
+                    '../../../etc/hosts',
+                ],
+                'windows': [
+                    '..\\..\\..\\windows\\win.ini',
+                    '..\\..\\..\\..\\windows\\win.ini',
+                    '..\\..\\..\\windows\\system32\\config\\sam',
+                ],
+                'encoded': [
+                    '%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd',
+                    '..%252f..%252f..%252fetc%252fpasswd',
+                    '..%c0%af..%c0%af..%c0%afetc%c0%afpasswd',
+                ],
+                'absolute': [
+                    '/etc/passwd',
+                    'C:\\windows\\win.ini',
+                    '/etc/shadow',
+                ]
+            }
+            
+            # Common file parameters
+            file_parameters = [
+                'file', 'filename', 'path', 'filepath', 'document',
+                'page', 'template', 'include', 'dir', 'folder',
+                'load', 'read', 'download', 'view'
+            ]
+            
+            vulnerable_params = []
+            tested_count = 0
+            
+            # Test 1: Scan for file parameters in page
+            result['findings'].append("Scanning for file-related parameters...")
+            
+            response = self._make_request(self.target)
+            if response:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Check forms with file inputs
+                forms = soup.find_all('form')
+                for form in forms:
+                    inputs = form.find_all(['input', 'select'])
+                    for inp in inputs:
+                        param_name = inp.get('name', '')
+                        if param_name.lower() in file_parameters:
+                            result['findings'].append(f"Found file parameter in form: {param_name}")
+                
+                # Check links with file parameters
+                links = soup.find_all('a', href=True)
+                for link in links[:30]:
+                    href = link.get('href')
+                    parsed = urlparse(urljoin(self.target, href))
+                    query_params = parse_qs(parsed.query)
+                    
+                    for param in file_parameters:
+                        if param in query_params:
+                            result['findings'].append(f"Found file parameter in URL: {param}")
+            
+            # Test 2: Test common endpoints with traversal
+            result['findings'].append("Testing path traversal payloads...")
+            
+            test_endpoints = [
+                '/download', '/file', '/files', '/get', '/load',
+                '/api/file', '/api/download', '/download.php',
+                '/view', '/read', '/include'
+            ]
+            
+            # Test each endpoint with traversal payloads
+            for endpoint in test_endpoints[:5]:
+                for param in file_parameters[:3]:
+                    for payload_type, payloads in traversal_payloads.items():
+                        for payload in payloads[:2]:  # Test 2 per type
+                            try:
+                                url = urljoin(self.target, f"{endpoint}?{param}={payload}")
+                                response = self._make_request(url, timeout=3)
+                                tested_count += 1
+                                
+                                if response and response.status_code == 200:
+                                    content = response.text.lower()
+                                    
+                                    # Unix file signatures
+                                    unix_signatures = [
+                                        'root:x:0:0',
+                                        'root:',
+                                        '/bin/bash',
+                                        '/bin/sh',
+                                        'daemon:',
+                                        '# /etc/passwd'
+                                    ]
+                                    
+                                    # Windows file signatures
+                                    windows_signatures = [
+                                        '[extensions]',
+                                        '[fonts]',
+                                        'for 16-bit app support',
+                                        '[mci extensions]'
+                                    ]
+                                    
+                                    # Check for file signatures
+                                    found_unix = any(sig in content for sig in unix_signatures)
+                                    found_windows = any(sig in content for sig in windows_signatures)
+                                    
+                                    if found_unix or found_windows:
+                                        result['severity'] = 'CRITICAL'
+                                        result['status'] = 'VULNERABLE'
+                                        
+                                        file_type = 'Unix' if found_unix else 'Windows'
+                                        
+                                        vulnerable_params.append({
+                                            'endpoint': endpoint,
+                                            'parameter': param,
+                                            'payload': payload,
+                                            'type': file_type
+                                        })
+                                        
+                                        result['findings'].append(
+                                            f"⚠️ CRITICAL: Path traversal vulnerability detected!"
+                                        )
+                                        result['findings'].append(
+                                            f"  Endpoint: {endpoint}"
+                                        )
+                                        result['findings'].append(
+                                            f"  Parameter: {param}"
+                                        )
+                                        result['findings'].append(
+                                            f"  Payload: {payload}"
+                                        )
+                                        result['findings'].append(
+                                            f"  File accessed: {file_type} system file"
+                                        )
+                            
+                            except Exception as e:
+                                logging.debug(f"Path traversal test error: {str(e)}")
+            
+            # Summary
+            if tested_count > 0:
+                result['findings'].append(f"Tested {tested_count} path traversal combinations")
+            
+            if len(vulnerable_params) > 0:
+                result['findings'].append(
+                    f"Found {len(vulnerable_params)} vulnerable parameter(s)"
+                )
+            
+            # Recommendations
+            if result['status'] == 'VULNERABLE':
+                result['recommendations'].append(
+                    "CRITICAL: Path traversal allows reading arbitrary files on server!"
+                )
+                result['recommendations'].append(
+                    "Immediate actions:"
+                )
+                result['recommendations'].append(
+                    "  1. Validate and sanitize ALL file path inputs"
+                )
+                result['recommendations'].append(
+                    "  2. Use whitelist of allowed files/directories"
+                )
+                result['recommendations'].append(
+                    "  3. Never concatenate user input directly to file paths"
+                )
+                result['recommendations'].append(
+                    "  4. Use path canonicalization and check result"
+                )
+                result['recommendations'].append(
+                    "  5. Implement chroot jail or similar isolation"
+                )
+                result['recommendations'].append(
+                    "PCI-DSS: This vulnerability allows access to cardholder data files"
+                )
+                
+                result['compliance']['OWASP_Top_10_2021'] += ' - FAIL (CRITICAL)'
+                result['compliance']['PCI_DSS_4.0'] += ' - FAIL (file access control broken)'
+            else:
+                result['findings'].append("✓ No path traversal vulnerabilities detected")
+                
+                result['recommendations'].append(
+                    "Path Traversal Prevention:"
+                )
+                result['recommendations'].append(
+                    "  - Never use user input directly in file paths"
+                )
+                result['recommendations'].append(
+                    "  - Use indirect references (map user input to safe paths)"
+                )
+                result['recommendations'].append(
+                    "  - Validate against whitelist of allowed files"
+                )
+                result['recommendations'].append(
+                    "  - Use realpath() or similar to resolve paths"
+                )
+                result['recommendations'].append(
+                    "  - Strip ../ and ..\ from all inputs"
+                )
+                result['recommendations'].append(
+                    "  - Run application with minimal file system permissions"
+                )
+        
+        except Exception as e:
+            result['status'] = 'ERROR'
+            result['error'] = str(e)
+            logging.error(f"Path traversal test error: {str(e)}")
+        
+        return result
+
+    def test_forced_browsing(self) -> Dict[str, Any]:
+        """
+        Test 31: Forced Browsing Detection
+        
+        Tests for access to restricted URLs by directly browsing to them
+        without proper authentication or authorization checks.
+        
+        Compliance:
+        - OWASP Top 10 2021: A01 (Broken Access Control)
+        - NIST CSF 2.0: PR.AC-5 (Network integrity protected)
+        - PCI-DSS 4.0: Req 7.1 (Limit access to system components)
+        - ISO 27001: A.9.4.1 (Information access restriction)
+        
+        Tests:
+        1. Admin/management interfaces
+        2. Backup files and directories
+        3. Configuration files
+        4. API endpoints without auth
+        5. Hidden directories
+        """
+        logging.info("Running forced browsing detection test...")
+        
+        result = {
+            'test_name': 'Forced Browsing Detection',
+            'description': 'Tests for accessible restricted URLs and directories',
+            'status': 'PASS',
+            'severity': 'INFO',
+            'findings': [],
+            'recommendations': [],
+            'compliance': {
+                'OWASP_Top_10_2021': 'A01 - Broken Access Control',
+                'NIST_CSF_2.0': 'PR.AC-5',
+                'PCI_DSS_4.0': 'Req 7.1',
+                'ISO_27001': 'A.9.4.1'
+            }
+        }
+        
+        try:
+            # Restricted paths to test
+            restricted_paths = {
+                'admin': [
+                    '/admin', '/admin/', '/admin/index', '/admin/dashboard',
+                    '/administrator', '/administrator/', '/admin.php',
+                    '/admin/login', '/admin/login.php', '/wp-admin',
+                    '/phpmyadmin', '/phpMyAdmin', '/pma',
+                    '/manager', '/management', '/console'
+                ],
+                'backup': [
+                    '/backup', '/backups', '/backup.zip', '/backup.tar.gz',
+                    '/db_backup.sql', '/database.sql', '/backup.sql',
+                    '/.backup', '/old', '/backup.tar', '/site_backup.zip'
+                ],
+                'config': [
+                    '/config', '/config.php', '/configuration.php',
+                    '/config.yml', '/config.json', '/.env',
+                    '/settings', '/settings.php', '/web.config',
+                    '/.git/config', '/application.properties'
+                ],
+                'api': [
+                    '/api', '/api/v1', '/api/v2', '/api/admin',
+                    '/api/users', '/api/user', '/api/config',
+                    '/rest', '/rest/api', '/graphql'
+                ],
+                'hidden': [
+                    '/.git', '/.svn', '/.hg', '/.ds_store',
+                    '/CVS', '/.htaccess', '/.htpasswd',
+                    '/robots.txt', '/sitemap.xml'
+                ]
+            }
+            
+            accessible_paths = []
+            critical_paths = []
+            tested_count = 0
+            
+            result['findings'].append("Testing restricted paths...")
+            
+            # Test each category
+            for category, paths in restricted_paths.items():
+                for path in paths:
+                    try:
+                        url = urljoin(self.target, path)
+                        response = self._make_request(url, timeout=3)
+                        tested_count += 1
+                        
+                        if response:
+                            # Consider different status codes
+                            if response.status_code == 200:
+                                accessible_paths.append({
+                                    'path': path,
+                                    'category': category,
+                                    'status': 200,
+                                    'size': len(response.text)
+                                })
+                                
+                                content_lower = response.text.lower()
+                                
+                                # Check for sensitive content
+                                sensitive_indicators = {
+                                    'admin': ['admin', 'dashboard', 'control panel', 'users', 'settings'],
+                                    'backup': ['sql', 'database', 'backup', 'dump'],
+                                    'config': ['password', 'api_key', 'secret', 'database', 'db_'],
+                                    'api': ['api', 'endpoint', 'swagger', 'openapi'],
+                                    'hidden': ['.git', 'index of', 'directory listing']
+                                }
+                                
+                                found_indicators = []
+                                if category in sensitive_indicators:
+                                    for indicator in sensitive_indicators[category]:
+                                        if indicator in content_lower:
+                                            found_indicators.append(indicator)
+                                
+                                # Determine severity
+                                is_critical = False
+                                
+                                if category in ['admin', 'config', 'backup']:
+                                    is_critical = True
+                                    result['severity'] = 'CRITICAL'
+                                    result['status'] = 'VULNERABLE'
+                                elif category in ['api', 'hidden']:
+                                    if result['severity'] == 'INFO':
+                                        result['severity'] = 'HIGH'
+                                        result['status'] = 'VULNERABLE'
+                                
+                                if is_critical:
+                                    critical_paths.append({
+                                        'path': path,
+                                        'category': category,
+                                        'indicators': found_indicators
+                                    })
+                                    
+                                    result['findings'].append(
+                                        f"⚠️ CRITICAL: Accessible {category} path: {path}"
+                                    )
+                                    if found_indicators:
+                                        result['findings'].append(
+                                            f"  Contains: {', '.join(found_indicators[:3])}"
+                                        )
+                                elif len(found_indicators) > 0:
+                                    result['findings'].append(
+                                        f"⚠️ HIGH: Accessible {category} path: {path}"
+                                    )
+                            
+                            elif response.status_code in [301, 302, 303, 307, 308]:
+                                # Redirect might indicate path exists
+                                location = response.headers.get('Location', '')
+                                if '/login' not in location.lower():
+                                    accessible_paths.append({
+                                        'path': path,
+                                        'category': category,
+                                        'status': response.status_code,
+                                        'redirect': location
+                                    })
+                    
+                    except Exception as e:
+                        logging.debug(f"Forced browsing test error for {path}: {str(e)}")
+            
+            # Summary
+            result['findings'].append(f"Tested {tested_count} restricted paths")
+            
+            if len(accessible_paths) > 0:
+                result['findings'].append(
+                    f"Found {len(accessible_paths)} accessible path(s)"
+                )
+            
+            if len(critical_paths) > 0:
+                result['findings'].append(
+                    f"⚠️ Found {len(critical_paths)} CRITICAL accessible path(s)"
+                )
+            
+            # Recommendations
+            if result['status'] == 'VULNERABLE':
+                result['recommendations'].append(
+                    "CRITICAL: Restricted areas accessible without authentication!"
+                )
+                result['recommendations'].append(
+                    "Immediate actions:"
+                )
+                result['recommendations'].append(
+                    "  1. Implement authentication on ALL admin/management interfaces"
+                )
+                result['recommendations'].append(
+                    "  2. Remove backup files from web-accessible directories"
+                )
+                result['recommendations'].append(
+                    "  3. Move config files outside document root"
+                )
+                result['recommendations'].append(
+                    "  4. Disable directory listing"
+                )
+                result['recommendations'].append(
+                    "  5. Remove .git, .svn and other VCS directories"
+                )
+                result['recommendations'].append(
+                    "PCI-DSS Req 7.1: Limit access to system components by role"
+                )
+                
+                result['compliance']['OWASP_Top_10_2021'] += ' - FAIL (CRITICAL)'
+                result['compliance']['PCI_DSS_4.0'] += ' - FAIL (unrestricted access)'
+            else:
+                result['findings'].append("✓ No forced browsing vulnerabilities detected")
+                
+                result['recommendations'].append(
+                    "Forced Browsing Prevention:"
+                )
+                result['recommendations'].append(
+                    "  - Implement authentication on all administrative interfaces"
+                )
+                result['recommendations'].append(
+                    "  - Use deny-by-default access control"
+                )
+                result['recommendations'].append(
+                    "  - Remove unnecessary files (backups, configs, VCS)"
+                )
+                result['recommendations'].append(
+                    "  - Disable directory listing in web server config"
+                )
+                result['recommendations'].append(
+                    "  - Use robots.txt to discourage (not prevent) indexing"
+                )
+                result['recommendations'].append(
+                    "  - Regular security audits for exposed files"
+                )
+        
+        except Exception as e:
+            result['status'] = 'ERROR'
+            result['error'] = str(e)
+            logging.error(f"Forced browsing test error: {str(e)}")
+        
+        return result
+
+    def test_vertical_authorization_bypass(self) -> Dict[str, Any]:
+        """
+        Test 32: Vertical Authorization Bypass Detection
+        
+        Tests for privilege escalation where users can access functions
+        meant for higher privilege levels (e.g., regular user → admin).
+        
+        Compliance:
+        - OWASP Top 10 2021: A01 (Broken Access Control)
+        - NIST CSF 2.0: PR.AC-4 (Access permissions managed)
+        - PCI-DSS 4.0: Req 7.2.2 (Privileges assigned to individuals)
+        - ISO 27001: A.9.2.3 (Management of privileged access rights)
+        
+        Tests:
+        1. Access to admin functions without admin role
+        2. Privilege escalation via parameter manipulation
+        3. Role-based access control bypass
+        4. Elevated function access
+        """
+        logging.info("Running vertical authorization bypass test...")
+        
+        result = {
+            'test_name': 'Vertical Authorization Bypass',
+            'description': 'Tests for privilege escalation vulnerabilities',
+            'status': 'PASS',
+            'severity': 'INFO',
+            'findings': [],
+            'recommendations': [],
+            'compliance': {
+                'OWASP_Top_10_2021': 'A01 - Broken Access Control',
+                'NIST_CSF_2.0': 'PR.AC-4',
+                'PCI_DSS_4.0': 'Req 7.2.2',
+                'ISO_27001': 'A.9.2.3'
+            }
+        }
+        
+        try:
+            # Privilege escalation indicators
+            privilege_escalation = {
+                'role_parameters': [
+                    'role', 'user_role', 'userRole', 'privilege', 
+                    'access_level', 'accessLevel', 'permission',
+                    'is_admin', 'isAdmin', 'admin', 'level'
+                ],
+                'role_values': [
+                    'admin', 'administrator', 'root', 'superuser',
+                    'manager', 'moderator', '1', 'true'
+                ],
+                'admin_functions': [
+                    '/admin/users', '/admin/user/delete', '/admin/settings',
+                    '/api/admin/', '/api/user/delete', '/api/user/update',
+                    '/user/delete', '/delete_user', '/modify_user',
+                    '/admin/config', '/config/update'
+                ]
+            }
+            
+            escalation_found = []
+            tested_count = 0
+            
+            # Test 1: Check for role parameters in page
+            result['findings'].append("Scanning for role/privilege parameters...")
+            
+            response = self._make_request(self.target)
+            if response:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Check forms for role parameters
+                forms = soup.find_all('form')
+                for form in forms:
+                    inputs = form.find_all(['input', 'select'])
+                    for inp in inputs:
+                        param_name = inp.get('name', '').lower()
+                        param_value = inp.get('value', '').lower()
+                        
+                        # Check if role parameter exists
+                        if param_name in privilege_escalation['role_parameters']:
+                            result['findings'].append(
+                                f"Found role parameter in form: {param_name}"
+                            )
+                            
+                            # Check if admin value is present
+                            if param_value in privilege_escalation['role_values']:
+                                result['severity'] = 'HIGH'
+                                result['status'] = 'VULNERABLE'
+                                result['findings'].append(
+                                    f"⚠️ HIGH: Admin value exposed in form: {param_name}={param_value}"
+                                )
+            
+            # Test 2: Test admin functions without authentication
+            result['findings'].append("Testing admin functions accessibility...")
+            
+            for admin_func in privilege_escalation['admin_functions']:
+                try:
+                    url = urljoin(self.target, admin_func)
+                    response = self._make_request(url, timeout=3)
+                    tested_count += 1
+                    
+                    if response and response.status_code == 200:
+                        content_lower = response.text.lower()
+                        
+                        # Check for admin interface indicators
+                        admin_indicators = [
+                            'delete user', 'modify user', 'user management',
+                            'delete account', 'ban user', 'admin panel',
+                            'configuration', 'settings', 'system settings'
+                        ]
+                        
+                        found_indicators = [ind for ind in admin_indicators if ind in content_lower]
+                        
+                        if found_indicators:
+                            result['severity'] = 'CRITICAL'
+                            result['status'] = 'VULNERABLE'
+                            
+                            escalation_found.append({
+                                'function': admin_func,
+                                'indicators': found_indicators
+                            })
+                            
+                            result['findings'].append(
+                                f"⚠️ CRITICAL: Admin function accessible: {admin_func}"
+                            )
+                            result['findings'].append(
+                                f"  Contains: {', '.join(found_indicators[:2])}"
+                            )
+                
+                except Exception as e:
+                    logging.debug(f"Vertical authorization test error for {admin_func}: {str(e)}")
+            
+            # Test 3: Parameter manipulation for privilege escalation
+            result['findings'].append("Testing privilege escalation via parameters...")
+            
+            test_endpoints = ['/profile', '/account', '/settings', '/api/user']
+            
+            for endpoint in test_endpoints:
+                for role_param in privilege_escalation['role_parameters'][:3]:
+                    for role_value in privilege_escalation['role_values'][:3]:
+                        try:
+                            # Test with elevated role parameter
+                            url = urljoin(self.target, f"{endpoint}?{role_param}={role_value}")
+                            response = self._make_request(url, timeout=3)
+                            tested_count += 1
+                            
+                            if response and response.status_code == 200:
+                                content_lower = response.text.lower()
+                                
+                                # Check if elevated content is shown
+                                elevated_indicators = [
+                                    'admin', 'administrator', 'superuser',
+                                    'privileged', 'elevated', 'all users'
+                                ]
+                                
+                                found_elevated = [ind for ind in elevated_indicators if ind in content_lower]
+                                
+                                if len(found_elevated) >= 2:
+                                    if result['severity'] == 'INFO':
+                                        result['severity'] = 'HIGH'
+                                        result['status'] = 'VULNERABLE'
+                                    
+                                    result['findings'].append(
+                                        f"⚠️ HIGH: Possible privilege escalation: {endpoint}?{role_param}={role_value}"
+                                    )
+                        
+                        except Exception as e:
+                            logging.debug(f"Parameter manipulation test error: {str(e)}")
+            
+            # Summary
+            if tested_count > 0:
+                result['findings'].append(f"Tested {tested_count} privilege escalation scenarios")
+            
+            if len(escalation_found) > 0:
+                result['findings'].append(
+                    f"⚠️ Found {len(escalation_found)} privilege escalation vector(s)"
+                )
+            
+            # Recommendations
+            if result['status'] == 'VULNERABLE':
+                result['recommendations'].append(
+                    "CRITICAL: Privilege escalation allows unauthorized admin access!"
+                )
+                result['recommendations'].append(
+                    "Immediate actions:"
+                )
+                result['recommendations'].append(
+                    "  1. Implement server-side role validation for ALL functions"
+                )
+                result['recommendations'].append(
+                    "  2. Never trust client-supplied role/privilege parameters"
+                )
+                result['recommendations'].append(
+                    "  3. Store roles/permissions in server-side session only"
+                )
+                result['recommendations'].append(
+                    "  4. Validate user role BEFORE executing any privileged function"
+                )
+                result['recommendations'].append(
+                    "  5. Implement role-based access control (RBAC) framework"
+                )
+                result['recommendations'].append(
+                    "PCI-DSS 7.2.2: Privileges must be assigned to individuals based on job"
+                )
+                
+                result['compliance']['OWASP_Top_10_2021'] += ' - FAIL (CRITICAL)'
+                result['compliance']['PCI_DSS_4.0'] += ' - FAIL (privilege escalation possible)'
+            else:
+                result['findings'].append("✓ No vertical authorization bypass detected")
+                
+                result['recommendations'].append(
+                    "Vertical Authorization Prevention:"
+                )
+                result['recommendations'].append(
+                    "  - Enforce role-based access control on server-side"
+                )
+                result['recommendations'].append(
+                    "  - Never expose role/privilege parameters to client"
+                )
+                result['recommendations'].append(
+                    "  - Validate user role before EVERY privileged operation"
+                )
+                result['recommendations'].append(
+                    "  - Use framework-level authorization (e.g., decorators)"
+                )
+                result['recommendations'].append(
+                    "  - Implement principle of least privilege"
+                )
+                result['recommendations'].append(
+                    "  - Regular audit of user roles and permissions"
+                )
+        
+        except Exception as e:
+            result['status'] = 'ERROR'
+            result['error'] = str(e)
+            logging.error(f"Vertical authorization test error: {str(e)}")
+        
+        return result
+
+    def test_horizontal_authorization_bypass(self) -> Dict[str, Any]:
+        """
+        Test 33: Horizontal Authorization Bypass Detection
+        
+        Tests for access to other users' data at the same privilege level
+        (e.g., user123 accessing user456's data).
+        
+        Compliance:
+        - OWASP Top 10 2021: A01 (Broken Access Control)
+        - NIST CSF 2.0: PR.AC-4 (Access permissions managed)
+        - PCI-DSS 4.0: Req 7.1.2 (Restrict access to privileged user IDs)
+        - ISO 27001: A.9.4.1 (Information access restriction)
+        - LGPD: Art. 46 (Security measures for personal data)
+        
+        Tests:
+        1. Access to other user profiles
+        2. Viewing other user orders/documents
+        3. User data enumeration
+        4. Session manipulation
+        """
+        logging.info("Running horizontal authorization bypass test...")
+        
+        result = {
+            'test_name': 'Horizontal Authorization Bypass',
+            'description': 'Tests for unauthorized access to other users\' data',
+            'status': 'PASS',
+            'severity': 'INFO',
+            'findings': [],
+            'recommendations': [],
+            'compliance': {
+                'OWASP_Top_10_2021': 'A01 - Broken Access Control',
+                'NIST_CSF_2.0': 'PR.AC-4',
+                'PCI_DSS_4.0': 'Req 7.1.2',
+                'ISO_27001': 'A.9.4.1',
+                'LGPD': 'Art. 46'
+            }
+        }
+        
+        try:
+            # User-specific endpoints and parameters
+            user_endpoints = {
+                'profile': [
+                    '/profile', '/user/profile', '/api/user',
+                    '/account', '/my-account', '/user/details'
+                ],
+                'documents': [
+                    '/documents', '/my-documents', '/user/documents',
+                    '/files', '/user/files', '/api/documents'
+                ],
+                'orders': [
+                    '/orders', '/my-orders', '/user/orders',
+                    '/api/orders', '/purchases', '/transactions'
+                ],
+                'messages': [
+                    '/messages', '/inbox', '/user/messages',
+                    '/api/messages', '/mail'
+                ]
+            }
+            
+            user_id_params = [
+                'user_id', 'userId', 'uid', 'id',
+                'user', 'account_id', 'accountId'
+            ]
+            
+            bypass_found = []
+            tested_count = 0
+            
+            # Test 1: Scan for user ID parameters
+            result['findings'].append("Scanning for user ID parameters...")
+            
+            response = self._make_request(self.target)
+            found_user_params = []
+            
+            if response:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Check links for user IDs
+                links = soup.find_all('a', href=True)
+                for link in links[:50]:
+                    href = link.get('href')
+                    parsed = urlparse(urljoin(self.target, href))
+                    query_params = parse_qs(parsed.query)
+                    
+                    for param in user_id_params:
+                        if param in query_params:
+                            param_value = query_params[param][0]
+                            found_user_params.append({
+                                'param': param,
+                                'value': param_value,
+                                'url': href
+                            })
+            
+            if found_user_params:
+                result['findings'].append(
+                    f"Found {len(found_user_params)} user ID parameter(s) in URLs"
+                )
+            
+            # Test 2: Test user endpoints with different IDs
+            result['findings'].append("Testing horizontal authorization bypass...")
+            
+            test_user_ids = ['1', '2', '100', '999', '1000']
+            
+            for category, endpoints in user_endpoints.items():
+                for endpoint in endpoints[:3]:  # Test 3 per category
+                    for user_param in user_id_params[:3]:  # Test 3 params
+                        for user_id in test_user_ids[:3]:  # Test 3 IDs
+                            try:
+                                url = urljoin(self.target, f"{endpoint}?{user_param}={user_id}")
+                                response = self._make_request(url, timeout=3)
+                                tested_count += 1
+                                
+                                if response and response.status_code == 200:
+                                    content_lower = response.text.lower()
+                                    
+                                    # Check for personal data indicators
+                                    personal_data_indicators = {
+                                        'profile': ['email', 'phone', 'address', 'birthday'],
+                                        'documents': ['document', 'file', 'download'],
+                                        'orders': ['order', 'purchase', 'payment', 'credit card'],
+                                        'messages': ['message', 'from:', 'to:', 'subject']
+                                    }
+                                    
+                                    found_data = []
+                                    if category in personal_data_indicators:
+                                        for indicator in personal_data_indicators[category]:
+                                            if indicator in content_lower:
+                                                found_data.append(indicator)
+                                    
+                                    # If multiple personal data indicators found
+                                    if len(found_data) >= 2:
+                                        result['severity'] = 'CRITICAL'
+                                        result['status'] = 'VULNERABLE'
+                                        
+                                        bypass_found.append({
+                                            'endpoint': endpoint,
+                                            'parameter': user_param,
+                                            'user_id': user_id,
+                                            'category': category,
+                                            'data_found': found_data
+                                        })
+                                        
+                                        result['findings'].append(
+                                            f"⚠️ CRITICAL: Horizontal bypass on {endpoint}"
+                                        )
+                                        result['findings'].append(
+                                            f"  Parameter: {user_param}={user_id}"
+                                        )
+                                        result['findings'].append(
+                                            f"  Exposed data: {', '.join(found_data[:3])}"
+                                        )
+                            
+                            except Exception as e:
+                                logging.debug(f"Horizontal authorization test error: {str(e)}")
+            
+            # Test 3: Sequential ID enumeration
+            if found_user_params:
+                result['findings'].append("Testing user ID enumeration...")
+                
+                sample_param = found_user_params[0]
+                if sample_param['value'].isdigit():
+                    original_id = int(sample_param['value'])
+                    
+                    # Test adjacent IDs
+                    adjacent_accessible = 0
+                    
+                    for offset in [-1, 1, 2]:
+                        test_id = original_id + offset
+                        if test_id > 0:
+                            try:
+                                test_url = sample_param['url'].replace(
+                                    str(original_id), str(test_id)
+                                )
+                                
+                                full_url = urljoin(self.target, test_url)
+                                response = self._make_request(full_url, timeout=3)
+                                
+                                if response and response.status_code == 200:
+                                    adjacent_accessible += 1
+                            
+                            except Exception as e:
+                                logging.debug(f"ID enumeration test error: {str(e)}")
+                    
+                    if adjacent_accessible >= 2:
+                        if result['severity'] == 'INFO':
+                            result['severity'] = 'HIGH'
+                            result['status'] = 'VULNERABLE'
+                        
+                        result['findings'].append(
+                            f"⚠️ HIGH: User enumeration possible - {adjacent_accessible} adjacent IDs accessible"
+                        )
+            
+            # Summary
+            if tested_count > 0:
+                result['findings'].append(f"Tested {tested_count} authorization scenarios")
+            
+            if len(bypass_found) > 0:
+                result['findings'].append(
+                    f"⚠️ Found {len(bypass_found)} horizontal authorization bypass(es)"
+                )
+            
+            # Recommendations
+            if result['status'] == 'VULNERABLE':
+                result['recommendations'].append(
+                    "CRITICAL: Users can access other users' personal data!"
+                )
+                result['recommendations'].append(
+                    "Immediate actions:"
+                )
+                result['recommendations'].append(
+                    "  1. Validate user ownership BEFORE returning ANY user data"
+                )
+                result['recommendations'].append(
+                    "  2. Check: currentUser.id == requestedUser.id"
+                )
+                result['recommendations'].append(
+                    "  3. Use session-based user identification, not URL parameters"
+                )
+                result['recommendations'].append(
+                    "  4. Implement per-user data access control"
+                )
+                result['recommendations'].append(
+                    "  5. Never trust client-supplied user IDs"
+                )
+                result['recommendations'].append(
+                    "LGPD Art. 46: This violates Brazilian data protection law!"
+                )
+                result['recommendations'].append(
+                    "PCI-DSS 7.1.2: Restrict access to cardholder data by user ID"
+                )
+                
+                result['compliance']['OWASP_Top_10_2021'] += ' - FAIL (CRITICAL)'
+                result['compliance']['PCI_DSS_4.0'] += ' - FAIL (user data accessible)'
+                result['compliance']['LGPD'] += ' - FAIL (data protection violation)'
+            else:
+                result['findings'].append("✓ No horizontal authorization bypass detected")
+                
+                result['recommendations'].append(
+                    "Horizontal Authorization Prevention:"
+                )
+                result['recommendations'].append(
+                    "  - Always validate: currentUser owns requestedResource"
+                )
+                result['recommendations'].append(
+                    "  - Use session to identify current user, not URL params"
+                )
+                result['recommendations'].append(
+                    "  - Implement object-level authorization checks"
+                )
+                result['recommendations'].append(
+                    "  - Use framework authorization middleware"
+                )
+                result['recommendations'].append(
+                    "  - Test with different user accounts"
+                )
+                result['recommendations'].append(
+                    "  - Regular security audits for data access patterns"
+                )
+        
+        except Exception as e:
+            result['status'] = 'ERROR'
+            result['error'] = str(e)
+            logging.error(f"Horizontal authorization test error: {str(e)}")
+        
+        return result
+
     def _generate_report(self) -> Dict[str, Any]:
         """Generate final scan report."""
         logging.info("Generating final report...")

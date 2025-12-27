@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="howbadisit"
-IMAGE_TAG="2.4.2"
+IMAGE_TAG="2.5.0"
 REPORTS_DIR="${SCRIPT_DIR}/reports"
 
 # Cores
@@ -38,7 +38,7 @@ error() {
 show_banner() {
     echo "╔═══════════════════════════════════════════════════════════════╗"
     echo "║                         HowBadIsIt?                           ║"
-    echo "║                           v2.4.2                              ║"
+    echo "║                           v2.5.0                              ║"
     echo "║                         CLI Wrapper                           ║"
     echo "╚═══════════════════════════════════════════════════════════════╝"
     echo ""

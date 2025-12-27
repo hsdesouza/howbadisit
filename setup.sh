@@ -26,7 +26,7 @@ NC='\033[0m' # No Color
 # Variáveis globais
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="howbadisit"
-IMAGE_TAG="2.4.2"
+IMAGE_TAG="2.5.0"
 REPO_URL="git@github.com:hsdesouza/howbadisit.git"
 INSTALL_DIR="/opt/howbadisit"
 
@@ -40,7 +40,7 @@ print_banner() {
     cat << 'EOF'
 ╔═══════════════════════════════════════════════════════════════╗
 ║                         HowBadIsIt?                           ║
-║                           v2.4.2                              ║
+║                           v2.5.0                              ║
 ║                       Automated Setup                         ║
 ╚═══════════════════════════════════════════════════════════════╝
 EOF
