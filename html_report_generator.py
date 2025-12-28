@@ -1,6 +1,6 @@
 """
-HTML Report Generator v2.4.0 - FIXED SIDEBAR BUG
-BUG FIX (Dec 21, 2024): Sidebar severity links now work correctly
+HTML Report Generator v2.5.1 - SECURITY HARDENING
+SECURITY FIXES (Dec 27, 2024): XSS prevention and path traversal protection
 
 WHAT WAS FIXED:
 - Line 195: Changed 'status != PASS' to 'status == VULNERABLE'
@@ -13,9 +13,88 @@ Now: Only adds VULNERABLE findings to severity groups
 Maintains approved v2.1.2 layout + adds intelligent recommendations
 """
 
+import html
 import json
+import os
+import re
 from datetime import datetime
 from pathlib import Path
+
+
+def _sanitize_html_id(value: str) -> str:
+    """
+    Sanitize a string to be safe for use as an HTML ID attribute.
+
+    - Removes all non-alphanumeric characters except hyphens and underscores
+    - Ensures ID starts with a letter
+    - Prevents XSS via ID injection
+
+    Args:
+        value: Raw string value
+
+    Returns:
+        Sanitized ID safe for HTML
+    """
+    # Remove all characters except alphanumeric, hyphen, underscore
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '-', value)
+
+    # Ensure it starts with a letter (HTML requirement)
+    if not sanitized or not sanitized[0].isalpha():
+        sanitized = 'id-' + sanitized
+
+    # Limit length to reasonable size
+    return sanitized[:100].lower()
+
+
+def _sanitize_html_class(value: str) -> str:
+    """
+    Sanitize a string to be safe for use as an HTML class attribute.
+
+    Args:
+        value: Raw string value
+
+    Returns:
+        Sanitized class name safe for HTML
+    """
+    # Similar to ID but allow spaces for multiple classes
+    return re.sub(r'[^a-zA-Z0-9_\s-]', '', value).strip()
+
+
+def _escape_html_content(value: str) -> str:
+    """
+    Escape HTML content to prevent XSS.
+
+    Wrapper around html.escape() for consistency.
+
+    Args:
+        value: Raw content
+
+    Returns:
+        HTML-escaped content
+    """
+    return html.escape(str(value), quote=True)
+
+
+def _get_template_path() -> str:
+    """
+    Get absolute path to report template file.
+
+    Uses __file__ to ensure path is relative to this script,
+    preventing path traversal attacks if os.getcwd() is manipulated.
+
+    Returns:
+        Absolute path to templates/report.html
+
+    Raises:
+        FileNotFoundError: If template doesn't exist
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    template_path = os.path.join(script_dir, 'templates', 'report.html')
+
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(f"Template not found at: {template_path}")
+
+    return template_path
 
 
 def generate_recommended_actions(results, summary):
@@ -121,13 +200,13 @@ def generate_recommended_actions(results, summary):
             })
     
     # Build HTML - NO TITLE, just badge and text
-    html = '<section id="recommended-actions" class="page-break">\n'
-    html += '    <h2 class="mb-2">Recommended Actions</h2>\n'
-    
+    html_content = '<section id="recommended-actions" class="page-break">\n'
+    html_content += '    <h2 class="mb-2">Recommended Actions</h2>\n'
+
     for rec in recommendations:
         priority = rec['priority']
         text = rec['text']
-        
+
         # Map priority to severity classes
         severity_class = priority.lower()
         if priority == 'POSITIVE':
@@ -141,34 +220,54 @@ def generate_recommended_actions(results, summary):
         else:
             badge_class = priority.lower()
             badge_text = priority.upper()
-        
+
         # NO finding-title, just badge in header and text in details
-        html += f'''    <div class="card finding {severity_class}">
+        html_content += f'''    <div class="card finding {severity_class}">
         <div class="finding-header">
             <div></div>
             <div>
                 <span class="badge badge-{badge_class}">{badge_text}</span>
             </div>
         </div>
-        
+
         <div class="finding-details">
-            <p style="margin: 0; line-height: 1.7;">{text}</p>
+            <p style="margin: 0; line-height: 1.7;">{html.escape(text)}</p>
         </div>
     </div>\n'''
-    
-    html += '</section>\n'
-    
-    return html
 
+    html_content += '</section>\n'
+
+    return html_content
+
+
+
+def _validate_scan_data(data):
+    """Valida estrutura JSON antes de processar."""
+    required_fields = ['target', 'scan_date', 'summary', 'results']
+
+    for field in required_fields:
+        if field not in data:
+            raise ValueError(f"Campo obrigatório ausente: {field}")
+
+    if not isinstance(data['summary'], dict):
+        raise TypeError(f"'summary' deve ser dict, recebido {type(data['summary'])}")
+
+    if not isinstance(data['results'], list):
+        raise TypeError(f"'results' deve ser list, recebido {type(data['results'])}")
+
+    return True
 
 
 def generate_html_report(json_file, output_file=None):
     """Generate HTML report from JSON - NO TEMPLATE PARSING!"""
-    
+
     # Load data
     with open(json_file, 'r') as f:
         data = json.load(f)
-    
+
+    # Validate JSON structure
+    _validate_scan_data(data)
+
     # Extract data
     target = data.get('target', 'Unknown')
     scan_date = data.get('scan_date', datetime.now().isoformat())
@@ -181,33 +280,47 @@ def generate_html_report(json_file, output_file=None):
     try:
         dt = datetime.fromisoformat(scan_date.replace('Z', '+00:00'))
         formatted_date = dt.strftime('%B %d, %Y at %H:%M:%S')
-    except:
+    except (ValueError, TypeError, AttributeError) as e:
+        # Fallback to original if parsing fails
         formatted_date = scan_date
     
     # Build findings HTML
     findings_html = ""
-    
+
     # Group findings by severity for navigation
     severity_groups = {'critical': [], 'high': [], 'medium': [], 'low': []}
-    
-    for result in results:
+
+    # Sort results by severity (CRITICAL > HIGH > MEDIUM > LOW > INFO > PASS)
+    severity_order = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3, 'INFO': 4, 'PASS': 5}
+    sorted_results = sorted(
+        results,
+        key=lambda r: (
+            severity_order.get(r.get('severity', 'INFO').upper(), 6),
+            r.get('status', 'UNKNOWN') != 'VULNERABLE',  # VULNERABLE first
+            r.get('test_name', '')  # Then alphabetically by name
+        )
+    )
+
+    for result in sorted_results:
         test_name = result.get('test_name', 'Unknown')
         severity = result.get('severity', 'INFO').lower()
         status = result.get('status', 'UNKNOWN')
         description = result.get('description', '')
         findings = result.get('findings', [])
         recommendations = result.get('recommendations', [])
-        
-        safe_id = test_name.replace(' ', '-').replace('/', '-').lower()
-        badge_class = 'pass' if status == 'PASS' else 'info'
-        
+
+        # SECURITY: Sanitize ID to prevent XSS via reflected test names
+        safe_id = _sanitize_html_id(test_name)
+        badge_class = _sanitize_html_class('pass' if status == 'PASS' else 'info')
+        safe_severity = _sanitize_html_class(severity)  # Sanitize severity for use in class attributes
+
         # Track severity groups (only VULNERABLE findings for sidebar navigation)
         if severity in severity_groups and status == 'VULNERABLE':
             severity_groups[severity].append(safe_id)
         
         findings_list = ""
         if findings:
-            findings_items = ''.join([f"<li>{f}</li>\n" for f in findings])
+            findings_items = ''.join([f"<li>{html.escape(f)}</li>\n" for f in findings])
             findings_list = f"""
                     <div class="detail-section">
                         <div class="detail-title">Findings</div>
@@ -218,7 +331,7 @@ def generate_html_report(json_file, output_file=None):
         
         recommendations_box = ""
         if recommendations:
-            rec_items = ''.join([f"<li>{r}</li>\n" for r in recommendations])
+            rec_items = ''.join([f"<li>{html.escape(r)}</li>\n" for r in recommendations])
             recommendations_box = f"""
                     <div class="recommendations">
                         <div class="recommendations-title">💡 Recommendations</div>
@@ -228,18 +341,18 @@ def generate_html_report(json_file, output_file=None):
                     </div>"""
         
         findings_html += f"""
-            <div class="card finding {severity}" id="{safe_id}" data-severity="{severity}">
+            <div class="card finding {safe_severity}" id="{safe_id}" data-severity="{safe_severity}">
                 <div class="finding-header">
                     <div>
-                        <div class="finding-title">{test_name}</div>
-                        <div class="finding-description">{description}</div>
+                        <div class="finding-title">{_escape_html_content(test_name)}</div>
+                        <div class="finding-description">{_escape_html_content(description)}</div>
                     </div>
                     <div>
-                        <span class="badge badge-{severity}">{severity.upper()}</span>
-                        <span class="badge badge-{badge_class}">{status}</span>
+                        <span class="badge badge-{safe_severity}">{_escape_html_content(severity.upper())}</span>
+                        <span class="badge badge-{badge_class}">{_escape_html_content(status)}</span>
                     </div>
                 </div>
-                
+
                 <div class="finding-details">
                     {findings_list}
                     {recommendations_box}
@@ -323,22 +436,23 @@ def generate_html_report(json_file, output_file=None):
                     <p style="color: #065f46; margin: 0;">No critical or high severity vulnerabilities were identified during this assessment.</p>
                 </div>"""
     
-    # Load CSS from template
-    with open('templates/report.html', 'r') as f:
+    # Load CSS from template (SECURITY: Use absolute path to prevent path traversal)
+    template_path = _get_template_path()
+    with open(template_path, 'r') as f:
         template_content = f.read()
-    
+
     # Extract CSS
     css_start = template_content.find('<style>')
     css_end = template_content.find('</style>') + len('</style>')
     css_block = template_content[css_start:css_end]
     
     # Generate full HTML
-    html = f"""<!DOCTYPE html>
+    html_doc = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Security Report - {target}</title>
+    <title>Security Report - {html.escape(target)}</title>
     {css_block}
 </head>
 <body>
@@ -428,7 +542,7 @@ def generate_html_report(json_file, output_file=None):
     
     Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(html)
+        f.write(html_doc)
     
     print(f"[✓] HTML report saved to: {output_file}")
     return output_file

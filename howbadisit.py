@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HowBadIsIt? - Professional Web Application Security Scanner
-Version: 2.5.0 - Phase 4B Complete
+Version: 2.5.1 - Security Hardening Release
 Author: Security Research Team
 License: MIT
 
@@ -72,11 +72,348 @@ import sys
 import re
 import os
 import time
+import hashlib
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, urljoin, parse_qs
 from typing import Dict, List, Any, Optional
 from bs4 import BeautifulSoup
+from dataclasses import dataclass, asdict
+from urllib.parse import urlencode, urlunparse
+
+# Sensitive header names that should be redacted in logs
+SENSITIVE_HEADERS = frozenset({
+    'authorization',
+    'cookie',
+    'set-cookie',
+    'x-api-key',
+    'x-auth-token',
+    'x-csrf-token',
+    'x-xsrf-token',
+    'api-key',
+    'apikey',
+    'access-token',
+    'refresh-token',
+    'bearer',
+    'token',
+    'secret',
+    'password',
+    'credentials',
+    'proxy-authorization',
+    'www-authenticate',
+})
+
+
+def _redact_sensitive_value(value: str, visible_chars: int = 4) -> str:
+    """
+    Redact sensitive value, showing only first few characters.
+
+    Args:
+        value: The sensitive string to redact
+        visible_chars: Number of characters to show at start
+
+    Returns:
+        Redacted string like "Bear****" or "[REDACTED]"
+    """
+    if not value or len(value) <= visible_chars:
+        return '[REDACTED]'
+    return value[:visible_chars] + '*' * min(8, len(value) - visible_chars)
+
+
+def _redact_headers(headers: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """
+    Redact sensitive headers for safe logging.
+
+    Args:
+        headers: Dictionary of HTTP headers
+
+    Returns:
+        New dictionary with sensitive values redacted
+    """
+    if not headers:
+        return {}
+
+    redacted = {}
+    for key, value in headers.items():
+        key_lower = key.lower()
+
+        # Check if header name is sensitive
+        is_sensitive = (
+            key_lower in SENSITIVE_HEADERS or
+            any(s in key_lower for s in ['auth', 'token', 'key', 'secret', 'password', 'credential'])
+        )
+
+        if is_sensitive:
+            redacted[key] = _redact_sensitive_value(str(value))
+        else:
+            redacted[key] = value
+
+    return redacted
+
+
+def _redact_url(url: str) -> str:
+    """
+    Redact sensitive information from URLs.
+
+    Handles:
+    - Basic auth: https://user:pass@host -> https://user:****@host
+    - Query params: ?api_key=secret -> ?api_key=****
+
+    Args:
+        url: URL that may contain sensitive data
+
+    Returns:
+        URL with sensitive parts redacted
+    """
+    try:
+        parsed = urlparse(url)
+
+        # Redact password in netloc (user:pass@host)
+        netloc = parsed.netloc
+        if '@' in netloc and ':' in netloc.split('@')[0]:
+            userinfo, host = netloc.rsplit('@', 1)
+            user, _ = userinfo.split(':', 1)
+            netloc = f"{user}:****@{host}"
+
+        # Redact sensitive query parameters
+        if parsed.query:
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            sensitive_params = ['key', 'token', 'secret', 'password', 'api_key', 'apikey', 'auth']
+
+            for param in list(params.keys()):
+                if any(s in param.lower() for s in sensitive_params):
+                    params[param] = ['****']
+
+            query = urlencode(params, doseq=True)
+        else:
+            query = parsed.query
+
+        return urlunparse((
+            parsed.scheme,
+            netloc,
+            parsed.path,
+            parsed.params,
+            query,
+            ''  # Remove fragment for logging
+        ))
+    except Exception:
+        # If parsing fails, return generic redaction
+        return url.split('?')[0] + '?[REDACTED]' if '?' in url else url
+
+
+@dataclass
+class RequestEvidence:
+    """Structured evidence of an HTTP request for audit purposes."""
+    method: str
+    url: str
+    headers: Dict[str, str]  # Should be redacted before storing
+    body_hash: Optional[str] = None
+    timestamp: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ResponseEvidence:
+    """Structured evidence of an HTTP response for audit purposes."""
+    status_code: int
+    content_type: str
+    content_length: int
+    content_hash: str  # SHA256 of response body
+    headers: Dict[str, str]  # Redacted
+    snippet: str  # First N chars of body (redacted if sensitive)
+    timestamp: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class VulnerabilityEvidence:
+    """
+    Complete evidence package for a security finding.
+
+    Required for HIGH/CRITICAL severity findings to ensure:
+    - Reproducibility
+    - Audit trail
+    - Baseline comparison
+    - Legal defensibility
+    """
+    finding_id: str
+    severity: str
+    confidence: str  # HIGH, MEDIUM, LOW
+
+    # Request/Response evidence
+    test_request: Optional[RequestEvidence] = None
+    test_response: Optional[ResponseEvidence] = None
+
+    # Baseline comparison
+    baseline_request: Optional[RequestEvidence] = None
+    baseline_response: Optional[ResponseEvidence] = None
+
+    # Canary comparison (for SPA detection)
+    canary_request: Optional[RequestEvidence] = None
+    canary_response: Optional[ResponseEvidence] = None
+
+    # Analysis
+    divergence_indicators: List[str] = None
+    false_positive_checks: List[str] = None
+    exploitation_path: Optional[str] = None
+
+    def __post_init__(self):
+        if self.divergence_indicators is None:
+            self.divergence_indicators = []
+        if self.false_positive_checks is None:
+            self.false_positive_checks = []
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            'finding_id': self.finding_id,
+            'severity': self.severity,
+            'confidence': self.confidence,
+            'divergence_indicators': self.divergence_indicators,
+            'false_positive_checks': self.false_positive_checks,
+            'exploitation_path': self.exploitation_path,
+        }
+
+        if self.test_request:
+            result['test_request'] = self.test_request.to_dict()
+        if self.test_response:
+            result['test_response'] = self.test_response.to_dict()
+        if self.baseline_request:
+            result['baseline_request'] = self.baseline_request.to_dict()
+        if self.baseline_response:
+            result['baseline_response'] = self.baseline_response.to_dict()
+        if self.canary_request:
+            result['canary_request'] = self.canary_request.to_dict()
+        if self.canary_response:
+            result['canary_response'] = self.canary_response.to_dict()
+
+        return result
+
+
+def _create_request_evidence(
+    method: str,
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+    body: Optional[bytes] = None
+) -> RequestEvidence:
+    """Create request evidence with proper redaction."""
+    return RequestEvidence(
+        method=method,
+        url=_redact_url(url),
+        headers=_redact_headers(headers or {}),
+        body_hash=hashlib.sha256(body).hexdigest()[:16] if body else None,
+        timestamp=datetime.now().isoformat()
+    )
+
+
+def _create_response_evidence(
+    response: requests.Response,
+    max_snippet_length: int = 500
+) -> ResponseEvidence:
+    """Create response evidence with proper redaction."""
+    content = response.content
+    text = response.text[:max_snippet_length] if response.text else ''
+
+    # Redact potential secrets in snippet
+    sensitive_patterns = [
+        (r'password["\']?\s*[:=]\s*["\']?[^"\'&\s]+', 'password=****'),
+        (r'token["\']?\s*[:=]\s*["\']?[^"\'&\s]+', 'token=****'),
+        (r'api_key["\']?\s*[:=]\s*["\']?[^"\'&\s]+', 'api_key=****'),
+        (r'secret["\']?\s*[:=]\s*["\']?[^"\'&\s]+', 'secret=****'),
+    ]
+
+    for pattern, replacement in sensitive_patterns:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    return ResponseEvidence(
+        status_code=response.status_code,
+        content_type=response.headers.get('Content-Type', 'unknown'),
+        content_length=len(content),
+        content_hash=hashlib.sha256(content).hexdigest()[:16],
+        headers=_redact_headers(dict(response.headers)),
+        snippet=text if len(text) < max_snippet_length else text[:max_snippet_length] + '...',
+        timestamp=datetime.now().isoformat()
+    )
+
+
+def _build_evidence(
+    finding_id: str,
+    severity: str,
+    confidence: str,
+    test_response: Optional[requests.Response] = None,
+    baseline_response: Optional[requests.Response] = None,
+    canary_response: Optional[requests.Response] = None,
+    test_url: str = None,
+    baseline_url: str = None,
+    canary_url: str = None,
+) -> VulnerabilityEvidence:
+    """
+    Build complete evidence package for a finding.
+
+    Usage in test methods:
+
+        if vulnerability_detected:
+            evidence = _build_evidence(
+                finding_id=f"sqli-{param}-{hashlib.md5(payload.encode()).hexdigest()[:8]}",
+                severity='CRITICAL',
+                confidence='HIGH',
+                test_response=test_response,
+                baseline_response=baseline_response,
+                test_url=test_url,
+                baseline_url=self.target,
+            )
+            evidence.divergence_indicators = [
+                f"Status code changed: {baseline_response.status_code} -> {test_response.status_code}",
+                f"Content hash differs from baseline",
+            ]
+            evidence.exploitation_path = f"Inject payload '{payload}' in parameter '{param}'"
+
+            result['evidence'] = evidence.to_dict()
+    """
+    evidence = VulnerabilityEvidence(
+        finding_id=finding_id,
+        severity=severity,
+        confidence=confidence,
+    )
+
+    if test_response:
+        evidence.test_request = _create_request_evidence('GET', test_url or '')
+        evidence.test_response = _create_response_evidence(test_response)
+
+    if baseline_response:
+        evidence.baseline_request = _create_request_evidence('GET', baseline_url or '')
+        evidence.baseline_response = _create_response_evidence(baseline_response)
+
+    if canary_response:
+        evidence.canary_request = _create_request_evidence('GET', canary_url or '')
+        evidence.canary_response = _create_response_evidence(canary_response)
+
+    # Auto-populate divergence indicators
+    if test_response and baseline_response:
+        if test_response.status_code != baseline_response.status_code:
+            evidence.divergence_indicators.append(
+                f"Status code: {baseline_response.status_code} -> {test_response.status_code}"
+            )
+
+        test_hash = hashlib.sha256(test_response.content).hexdigest()[:16]
+        baseline_hash = hashlib.sha256(baseline_response.content).hexdigest()[:16]
+        if test_hash != baseline_hash:
+            evidence.divergence_indicators.append(
+                f"Content hash differs: {baseline_hash} vs {test_hash}"
+            )
+
+        test_ct = test_response.headers.get('Content-Type', '')
+        baseline_ct = baseline_response.headers.get('Content-Type', '')
+        if test_ct != baseline_ct:
+            evidence.divergence_indicators.append(
+                f"Content-Type: {baseline_ct} -> {test_ct}"
+            )
+
+    return evidence
+
 
 # Configure logging
 logging.basicConfig(
@@ -111,19 +448,23 @@ class HowBadIsIt:
             'target': self.target,
             'domain': self.domain,
             'scan_date': datetime.now().isoformat(),
-            'scanner_version': '2.4.0',
+            'scanner_version': '2.5.1',
             'scanner_name': 'HowBadIsIt?'
         }
         
         # User agent
         self.headers = {
-            'User-Agent': 'HowBadIsIt?/2.4.0 (Security Scanner)'
+            'User-Agent': 'HowBadIsIt?/2.5.1 (Security Scanner)'
         }
         
         # Session for maintaining cookies
         self.session = requests.Session()
         self.session.headers.update(self.headers)
-        
+
+        # SPA detection cache (lazy-loaded)
+        self._spa_fingerprint: Optional[Dict[str, Any]] = None
+        self._spa_detection_performed: bool = False
+
         logging.info(f"Initialized scanner for target: {self.target}")
     
     def _normalize_target(self, target: str) -> str:
@@ -136,16 +477,38 @@ class HowBadIsIt:
         """Extract domain from URL."""
         parsed = urlparse(url)
         return parsed.netloc or parsed.path
-    
+
+    def _validate_output_path(self, filepath: str) -> str:
+        """
+        Validate that output file path is safe and within current directory.
+
+        Args:
+            filepath: Path to validate
+
+        Returns:
+            Absolute safe path
+
+        Raises:
+            ValueError: If path attempts to escape current directory
+        """
+        abs_path = os.path.abspath(filepath)
+        cwd = os.getcwd()
+
+        # Ensure path is within current working directory
+        if not abs_path.startswith(cwd):
+            raise ValueError(f"Security: Output file must be in current directory. Attempted: {abs_path}")
+
+        return abs_path
+
     def _make_request(self, url: str, method: str = 'GET', **kwargs) -> Optional[requests.Response]:
         """
         Make HTTP request with error handling.
-        
+
         Args:
             url: URL to request
             method: HTTP method
             **kwargs: Additional arguments for requests
-            
+
         Returns:
             Response object or None if request fails
         """
@@ -154,13 +517,424 @@ class HowBadIsIt:
             kwargs.setdefault('headers', self.headers)
             kwargs.setdefault('verify', False)
             kwargs.setdefault('allow_redirects', True)
-            
+
             response = requests.request(method, url, **kwargs)
             return response
         except requests.exceptions.RequestException as e:
-            logging.warning(f"Request failed for {url}: {str(e)}")
+            # SECURITY: Redact sensitive information before logging
+            safe_url = _redact_url(url)
+
+            # Extract and redact any headers from the exception message
+            error_msg = str(e)
+
+            # Common patterns that might leak headers
+            if 'Authorization' in error_msg or 'Cookie' in error_msg:
+                error_msg = '[Request failed - details redacted for security]'
+
+            logging.warning(f"Request failed for {safe_url}: {error_msg}")
+
+            # Debug logging with redacted headers (only in verbose mode)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                request_headers = kwargs.get('headers', self.headers)
+                safe_headers = _redact_headers(request_headers)
+                logging.debug(f"Failed request headers: {safe_headers}")
+
             return None
-    
+
+    def _get_spa_fingerprint(self) -> Dict[str, Any]:
+        """
+        Detect if target is a Single Page Application and generate fingerprint.
+
+        Returns:
+            Dict containing:
+                - is_spa: bool - Whether target appears to be a SPA
+                - baseline_hash: str - SHA256 of index.html content
+                - baseline_size: int - Content-Length of index.html
+                - baseline_title: str - Extracted <title> tag content
+                - spa_framework: str - Detected framework (React/Vue/Angular/Unknown)
+                - spa_indicators: List[str] - Evidence for SPA classification
+        """
+        if self._spa_detection_performed and self._spa_fingerprint is not None:
+            return self._spa_fingerprint
+
+        self._spa_detection_performed = True
+
+        fingerprint = {
+            'is_spa': False,
+            'baseline_hash': None,
+            'baseline_size': 0,
+            'baseline_title': '',
+            'spa_framework': None,
+            'spa_indicators': [],
+            'confidence': 'LOW'
+        }
+
+        try:
+            # Get baseline response from root
+            baseline_response = self._make_request(self.target)
+            if not baseline_response:
+                self._spa_fingerprint = fingerprint
+                return fingerprint
+
+            baseline_content = baseline_response.content
+            baseline_text = baseline_response.text
+
+            fingerprint['baseline_size'] = len(baseline_content)
+            fingerprint['baseline_hash'] = hashlib.sha256(baseline_content).hexdigest()
+
+            # Extract title
+            title_match = re.search(r'<title[^>]*>([^<]+)</title>', baseline_text, re.IGNORECASE)
+            fingerprint['baseline_title'] = title_match.group(1).strip() if title_match else ''
+
+            # SPA indicators in HTML
+            spa_patterns = {
+                'React': [
+                    r'<div\s+id=["\']root["\']',
+                    r'<div\s+id=["\']app["\']',
+                    r'react\.production\.min\.js',
+                    r'react-dom',
+                    r'__REACT_DEVTOOLS_GLOBAL_HOOK__',
+                    r'data-reactroot'
+                ],
+                'Vue': [
+                    r'<div\s+id=["\']app["\']',
+                    r'vue\.runtime',
+                    r'__VUE__',
+                    r'v-cloak',
+                    r'vue\.js',
+                    r'vue\.min\.js'
+                ],
+                'Angular': [
+                    r'<app-root',
+                    r'ng-version',
+                    r'angular\.js',
+                    r'ng-app',
+                    r'zone\.js',
+                    r'polyfills.*\.js'
+                ],
+                'Generic_SPA': [
+                    r'<script\s+type=["\']module["\']',
+                    r'manifest\.json',
+                    r'service-worker',
+                    r'<noscript>.*enable JavaScript',
+                    r'Loading\.\.\.',
+                    r'<!DOCTYPE html>.*<body[^>]*>\s*<div[^>]*>\s*</div>\s*<script'
+                ]
+            }
+
+            detected_framework = None
+            indicators = []
+
+            for framework, patterns in spa_patterns.items():
+                for pattern in patterns:
+                    if re.search(pattern, baseline_text, re.IGNORECASE | re.DOTALL):
+                        indicators.append(f"{framework}: {pattern[:30]}...")
+                        if framework != 'Generic_SPA' and not detected_framework:
+                            detected_framework = framework
+
+            fingerprint['spa_indicators'] = indicators
+            fingerprint['spa_framework'] = detected_framework
+
+            # Test catch-all behavior with multiple non-existent paths
+            test_paths = [
+                '/this-path-definitely-does-not-exist-abc123',
+                '/random-test-xyz-789',
+                '/spa-detection-test-path'
+            ]
+
+            identical_responses = 0
+            for test_path in test_paths:
+                test_url = urljoin(self.target, test_path)
+                test_response = self._make_request(test_url)
+
+                if test_response and test_response.status_code == 200:
+                    test_hash = hashlib.sha256(test_response.content).hexdigest()
+                    if test_hash == fingerprint['baseline_hash']:
+                        identical_responses += 1
+
+            # Determine if SPA based on evidence
+            is_spa = False
+            confidence = 'LOW'
+
+            if identical_responses >= 2:
+                is_spa = True
+                confidence = 'HIGH'
+                indicators.append(f"Catch-all routing: {identical_responses}/3 test paths return identical content")
+
+            if detected_framework and identical_responses >= 1:
+                is_spa = True
+                confidence = 'HIGH'
+
+            if len(indicators) >= 3 and identical_responses >= 1:
+                is_spa = True
+                confidence = 'MEDIUM'
+
+            fingerprint['is_spa'] = is_spa
+            fingerprint['confidence'] = confidence
+
+            if is_spa:
+                logging.info(f"SPA detected: {detected_framework or 'Generic'} (confidence: {confidence})")
+
+        except Exception as e:
+            logging.warning(f"SPA fingerprinting failed: {str(e)}")
+
+        self._spa_fingerprint = fingerprint
+        return fingerprint
+
+    def _is_spa_catchall_response(self, response: requests.Response, expected_content_type: str = None) -> tuple:
+        """
+        Determine if a response is a SPA catch-all (false positive).
+
+        Args:
+            response: The HTTP response to analyze
+            expected_content_type: Expected MIME type for the file
+
+        Returns:
+            Tuple of (is_catchall: bool, reason: str)
+        """
+        if not response:
+            return False, "No response"
+
+        fingerprint = self._get_spa_fingerprint()
+
+        if not fingerprint['is_spa']:
+            return False, "Target is not a SPA"
+
+        # Check 1: Content hash matches baseline
+        response_hash = hashlib.sha256(response.content).hexdigest()
+        if response_hash == fingerprint['baseline_hash']:
+            return True, f"SPA fallback detected (identical content hash: {response_hash[:16]}...)"
+
+        # Check 2: Content size matches baseline (within tolerance)
+        size_tolerance = 100  # bytes
+        if abs(len(response.content) - fingerprint['baseline_size']) < size_tolerance:
+            # Additional check: same title
+            title_match = re.search(r'<title[^>]*>([^<]+)</title>', response.text, re.IGNORECASE)
+            response_title = title_match.group(1).strip() if title_match else ''
+            if response_title == fingerprint['baseline_title']:
+                return True, f"SPA fallback detected (identical size {len(response.content)} bytes, same title)"
+
+        # Check 3: Content-Type mismatch
+        if expected_content_type:
+            actual_content_type = response.headers.get('Content-Type', '')
+            if 'text/html' in actual_content_type and expected_content_type != 'text/html':
+                # Verify it's actually HTML with SPA markers
+                if '<!DOCTYPE html>' in response.text or '<html' in response.text:
+                    spa_markers = ['<div id="root"', '<div id="app"', '<app-root', 'ng-app']
+                    if any(marker in response.text for marker in spa_markers):
+                        return True, f"SPA fallback detected (HTML returned for {expected_content_type} request)"
+
+        # Check 4: HTML returned for non-HTML file extensions
+        content_type = response.headers.get('Content-Type', '')
+        if 'text/html' in content_type:
+            # Check for HTML content when we expect raw files
+            if '<!DOCTYPE html>' in response.text[:500] or '<html' in response.text[:500]:
+                # This is HTML - likely SPA fallback for a file that should be raw
+                return True, "SPA fallback detected (HTML document returned for file request)"
+
+        return False, "Response appears legitimate"
+
+    def _get_expected_content_type(self, path: str) -> Optional[str]:
+        """
+        Get expected Content-Type based on file extension.
+
+        Args:
+            path: File path (e.g., '/.git/config', '/.env')
+
+        Returns:
+            Expected MIME type or None if unknown
+        """
+        extension_types = {
+            '.json': 'application/json',
+            '.xml': 'application/xml',
+            '.yml': 'text/yaml',
+            '.yaml': 'text/yaml',
+            '.txt': 'text/plain',
+            '.sql': 'text/plain',
+            '.env': 'text/plain',
+            '.config': 'text/plain',
+            '.htaccess': 'text/plain',
+            '.htpasswd': 'text/plain',
+            '.php': 'text/html',
+            '.asp': 'text/html',
+            '.aspx': 'text/html',
+            '.jsp': 'text/html'
+        }
+
+        # Handle files without extension
+        filename = path.split('/')[-1]
+        if filename in ['config', 'HEAD', 'credentials', 'passwd']:
+            return 'text/plain'
+
+        for ext, content_type in extension_types.items():
+            if path.endswith(ext):
+                return content_type
+
+        # Git files
+        if '.git/' in path:
+            return 'text/plain'
+
+        return None
+
+    def _validate_file_content(self, path: str, response: requests.Response, expected_type: str) -> bool:
+        """
+        Validate that file content matches expected patterns.
+
+        Args:
+            path: File path being tested
+            response: HTTP response object
+            expected_type: Expected MIME type
+
+        Returns:
+            True if content appears valid, False if likely false positive
+        """
+        content = response.text
+
+        # Check for specific file signatures
+        validations = {
+            '/.git/config': lambda c: '[core]' in c or '[remote' in c,
+            '/.git/HEAD': lambda c: c.strip().startswith('ref:') or len(c.strip()) == 40,
+            '/.env': lambda c: '=' in c and '<!DOCTYPE' not in c,
+            '/robots.txt': lambda c: 'User-agent' in c or 'Disallow' in c or 'Allow' in c or 'Sitemap' in c,
+            '/sitemap.xml': lambda c: '<?xml' in c and 'urlset' in c.lower(),
+            '/composer.json': lambda c: '"name"' in c or '"require"' in c,
+            '/package.json': lambda c: '"name"' in c or '"dependencies"' in c,
+            '/.htaccess': lambda c: 'RewriteRule' in c or 'Options' in c or 'Order' in c,
+            '/web.config': lambda c: '<?xml' in c and 'configuration' in c.lower()
+        }
+
+        # SQL file validation
+        if '.sql' in path:
+            sql_patterns = ['CREATE TABLE', 'INSERT INTO', 'DROP TABLE', 'ALTER TABLE',
+                           'SELECT ', 'UPDATE ', 'DELETE FROM', '-- MySQL', '-- PostgreSQL']
+            return any(pattern in content.upper() for pattern in sql_patterns)
+
+        # PHP info files
+        if path in ['/phpinfo.php', '/info.php']:
+            return 'PHP Version' in content or 'phpinfo()' in content
+
+        # Config files - should not be HTML
+        if 'config' in path.lower() or path.endswith(('.yml', '.yaml')):
+            if '<!DOCTYPE html>' in content or '<html' in content[:500]:
+                return False
+
+        # Use specific validator if available
+        if path in validations:
+            return validations[path](content)
+
+        # Generic validation: non-HTML for most sensitive files
+        if expected_type in ['text/plain', 'application/json', 'text/yaml', 'application/xml']:
+            # Check if we got HTML when we expected something else
+            if '<!DOCTYPE html>' in content[:200] or '<html' in content[:200]:
+                # Exception: XML files that look like HTML
+                if expected_type == 'application/xml' and '<?xml' in content[:100]:
+                    return True
+                return False
+
+        return True
+
+    def _add_disclosure_recommendations(self, result: Dict[str, Any], exposed_files: List[Dict]) -> None:
+        """Add context-specific recommendations based on exposed files."""
+
+        has_git = any('.git' in f['path'] for f in exposed_files)
+        has_env = any('.env' in f['path'] for f in exposed_files)
+        has_sql = any('.sql' in f['path'] for f in exposed_files)
+        has_aws = any('.aws' in f['path'] for f in exposed_files)
+        has_config = any('config' in f['path'] for f in exposed_files)
+
+        if has_git:
+            result['recommendations'].append(
+                "CRITICAL: Remove or block access to .git directory immediately. "
+                "Exposed Git repositories allow full source code extraction."
+            )
+
+        if has_env:
+            result['recommendations'].append(
+                "CRITICAL: Remove .env files from web root. Use environment variables "
+                "or secure secrets management. Rotate all exposed credentials."
+            )
+
+        if has_sql:
+            result['recommendations'].append(
+                "CRITICAL: Delete database backup files from web-accessible directories. "
+                "These may contain sensitive data including password hashes."
+            )
+
+        if has_aws:
+            result['recommendations'].append(
+                "CRITICAL: Remove AWS credentials file immediately. Rotate all exposed "
+                "access keys and secret keys. Review CloudTrail for unauthorized access."
+            )
+
+        if has_config:
+            result['recommendations'].append(
+                "HIGH: Move configuration files outside web root or implement access "
+                "restrictions. Configuration files often contain database credentials."
+            )
+
+        result['recommendations'].append(
+            "Audit all web-accessible directories and implement deny-by-default rules."
+        )
+
+    def _verify_http_method(self, method: str, spa_fingerprint: Dict[str, Any]) -> tuple:
+        """
+        Verify if an HTTP method is actually functional (not SPA fallback).
+
+        Args:
+            method: HTTP method to test (PUT, DELETE, TRACE, etc.)
+            spa_fingerprint: SPA fingerprint from _get_spa_fingerprint()
+
+        Returns:
+            Tuple of (is_functional: bool, evidence: str)
+        """
+        response = self._make_request(self.target, method)
+
+        if not response:
+            return False, "No response received"
+
+        # Explicit rejection is clear
+        if response.status_code in [405, 501, 403]:
+            return False, f"Method properly disabled (HTTP {response.status_code})"
+
+        # If not 200, method likely not enabled
+        if response.status_code != 200:
+            return False, f"Method returns HTTP {response.status_code}"
+
+        # Status 200 - need deeper analysis for SPAs
+        if spa_fingerprint['is_spa']:
+            response_hash = hashlib.sha256(response.content).hexdigest()
+
+            # If response is identical to index.html, it's SPA fallback
+            if response_hash == spa_fingerprint['baseline_hash']:
+                return False, f"SPA fallback (identical to index.html, hash: {response_hash[:16]}...)"
+
+            # Check if response is HTML when it shouldn't be
+            content_type = response.headers.get('Content-Type', '')
+            if 'text/html' in content_type:
+                if '<!DOCTYPE html>' in response.text[:500] or '<html' in response.text[:500]:
+                    # Check for SPA markers
+                    spa_markers = ['<div id="root"', '<div id="app"', '<app-root']
+                    if any(marker in response.text for marker in spa_markers):
+                        return False, "SPA fallback (HTML with SPA markers returned)"
+
+        # Method returns 200 with different content - likely functional
+        if method == 'PUT':
+            return True, f"HTTP 200 with {len(response.content)} bytes response"
+
+        if method == 'DELETE':
+            return True, f"HTTP 200 returned - method may be enabled"
+
+        if method == 'TRACE':
+            # TRACE should echo the request
+            if 'TRACE' in response.text:
+                return True, "Request echoed in response - XST risk"
+            return False, "HTTP 200 but request not echoed"
+
+        if method == 'CONNECT':
+            return True, f"HTTP 200 returned - proxy functionality may be enabled"
+
+        return True, f"HTTP 200 with unique response ({len(response.content)} bytes)"
+
     def run_all_tests(self) -> Dict[str, Any]:
         """
         Execute all security tests.
@@ -436,9 +1210,14 @@ class HowBadIsIt:
         return result
     
     def test_information_disclosure(self) -> Dict[str, Any]:
-        """Check for exposed sensitive files and information."""
+        """
+        Check for exposed sensitive files and information.
+
+        Enhanced with SPA detection to eliminate false positives from
+        catch-all routing that returns index.html for all paths.
+        """
         logging.info("Running information disclosure test...")
-        
+
         result = {
             'test_name': 'Information Disclosure',
             'description': 'Checks for exposed sensitive files and directories',
@@ -447,138 +1226,126 @@ class HowBadIsIt:
             'findings': [],
             'recommendations': []
         }
-        
-        # Common sensitive files/directories
+
+        # Common sensitive files/directories with expected content types and severity
         sensitive_paths = [
-            '/.git/config',
-            '/.git/HEAD',
-            '/.env',
-            '/.env.local',
-            '/.env.production',
-            '/config.php',
-            '/configuration.php',
-            '/wp-config.php',
-            '/config.yml',
-            '/settings.py',
-            '/.aws/credentials',
-            '/backup.sql',
-            '/database.sql',
-            '/dump.sql',
-            '/robots.txt',
-            '/sitemap.xml',
-            '/.htaccess',
-            '/web.config',
-            '/phpinfo.php',
-            '/info.php',
-            '/.DS_Store',
-            '/composer.json',
-            '/package.json'
+            ('/.git/config', 'text/plain', 'HIGH'),
+            ('/.git/HEAD', 'text/plain', 'HIGH'),
+            ('/.env', 'text/plain', 'HIGH'),
+            ('/.env.local', 'text/plain', 'HIGH'),
+            ('/.env.production', 'text/plain', 'HIGH'),
+            ('/config.php', 'text/html', 'HIGH'),
+            ('/configuration.php', 'text/html', 'HIGH'),
+            ('/wp-config.php', 'text/html', 'HIGH'),
+            ('/config.yml', 'text/yaml', 'HIGH'),
+            ('/settings.py', 'text/plain', 'HIGH'),
+            ('/.aws/credentials', 'text/plain', 'CRITICAL'),
+            ('/backup.sql', 'text/plain', 'CRITICAL'),
+            ('/database.sql', 'text/plain', 'CRITICAL'),
+            ('/dump.sql', 'text/plain', 'CRITICAL'),
+            ('/robots.txt', 'text/plain', 'INFO'),
+            ('/sitemap.xml', 'application/xml', 'INFO'),
+            ('/.htaccess', 'text/plain', 'MEDIUM'),
+            ('/web.config', 'application/xml', 'MEDIUM'),
+            ('/phpinfo.php', 'text/html', 'HIGH'),
+            ('/info.php', 'text/html', 'HIGH'),
+            ('/.DS_Store', 'application/octet-stream', 'LOW'),
+            ('/composer.json', 'application/json', 'LOW'),
+            ('/package.json', 'application/json', 'LOW')
         ]
-        
+
         exposed_files = []
-        
+        false_positives = []
+
         try:
-            for path in sensitive_paths:
+            # Get SPA fingerprint for false positive detection
+            spa_fingerprint = self._get_spa_fingerprint()
+
+            if spa_fingerprint['is_spa']:
+                result['findings'].append(
+                    f"SPA Detected: {spa_fingerprint['spa_framework'] or 'Generic'} "
+                    f"(confidence: {spa_fingerprint['confidence']})"
+                )
+                result['findings'].append(
+                    f"Baseline fingerprint: {spa_fingerprint['baseline_size']} bytes, "
+                    f"hash: {spa_fingerprint['baseline_hash'][:16]}..."
+                )
+
+            for path, expected_type, file_severity in sensitive_paths:
                 url = urljoin(self.target, path)
                 response = self._make_request(url)
-                
+
                 if response and response.status_code == 200:
-                    exposed_files.append({
-                        'path': path,
-                        'url': url,
-                        'status_code': response.status_code,
-                        'size': len(response.content)
-                    })
-                    
-                    # Determine severity based on file type
-                    if any(x in path for x in ['.git', '.env', 'config', '.sql', 'backup', 'dump']):
-                        severity = 'HIGH'
-                    elif any(x in path for x in ['robots.txt', 'sitemap.xml']):
-                        severity = 'INFO'
+                    response_size = len(response.content)
+                    response_hash = hashlib.sha256(response.content).hexdigest()
+
+                    # Check for SPA catch-all false positive
+                    is_catchall, reason = self._is_spa_catchall_response(response, expected_type)
+
+                    if is_catchall:
+                        # Record as false positive for transparency
+                        false_positives.append({
+                            'path': path,
+                            'reason': reason,
+                            'size': response_size,
+                            'hash': response_hash[:16]
+                        })
+                        logging.debug(f"FALSE POSITIVE: {path} - {reason}")
+                        continue
+
+                    # Additional validation for true positives
+                    is_valid = self._validate_file_content(path, response, expected_type)
+
+                    if is_valid:
+                        exposed_files.append({
+                            'path': path,
+                            'url': url,
+                            'status_code': response.status_code,
+                            'size': response_size,
+                            'content_hash': response_hash[:16],
+                            'severity': file_severity,
+                            'confidence': 'HIGH'
+                        })
+
+                        result['findings'].append(
+                            f"Exposed file [{file_severity}]: {path} "
+                            f"(HTTP {response.status_code}, {response_size} bytes)"
+                        )
                     else:
-                        severity = 'MEDIUM'
-                    
-                    result['findings'].append(
-                        f"Exposed file [{severity}]: {path} (HTTP {response.status_code})"
-                    )
-            
+                        # Content validation failed - low confidence
+                        false_positives.append({
+                            'path': path,
+                            'reason': 'Content validation failed',
+                            'size': response_size
+                        })
+
             result['exposed_files'] = exposed_files
-            
+            result['false_positives_filtered'] = len(false_positives)
+
+            if false_positives:
+                result['findings'].append(
+                    f"Filtered {len(false_positives)} false positive(s) "
+                    f"(SPA catch-all responses)"
+                )
+
             if exposed_files:
                 result['status'] = 'VULNERABLE'
-                
-                # Determine overall severity
-                if any('.git' in f['path'] or '.env' in f['path'] or '.sql' in f['path'] 
-                       for f in exposed_files):
-                    result['severity'] = 'HIGH'
-                else:
-                    result['severity'] = 'MEDIUM'
-                
-                # Add specific recommendations based on what was found
-                has_git = any('.git' in f['path'] for f in exposed_files)
-                has_env = any('.env' in f['path'] for f in exposed_files)
-                has_sql = any('.sql' in f['path'] or 'backup' in f['path'] or 'dump' in f['path'] 
-                            for f in exposed_files)
-                has_config = any('config' in f['path'] or 'settings' in f['path'] 
-                               for f in exposed_files)
-                has_aws = any('.aws' in f['path'] for f in exposed_files)
-                has_htaccess = any('.htaccess' in f['path'] or 'web.config' in f['path'] 
-                                  for f in exposed_files)
-                has_info_files = any(f['path'] in ['/robots.txt', '/sitemap.xml'] 
-                                    for f in exposed_files)
-                
-                # Only non-info files trigger recommendations
-                critical_files = [f for f in exposed_files 
-                                if f['path'] not in ['/robots.txt', '/sitemap.xml']]
-                
-                if critical_files:
-                    if has_git:
-                        result['recommendations'].append(
-                            "CRITICAL: Remove or block access to .git directory immediately"
-                        )
-                    
-                    if has_env:
-                        result['recommendations'].append(
-                            "CRITICAL: Remove .env files from web root and use environment variables"
-                        )
-                    
-                    if has_sql:
-                        result['recommendations'].append(
-                            "CRITICAL: Delete database backup files (*.sql) from web-accessible directories"
-                        )
-                    
-                    if has_aws:
-                        result['recommendations'].append(
-                            "CRITICAL: Remove AWS credentials file and rotate all exposed keys immediately"
-                        )
-                    
-                    if has_config:
-                        result['recommendations'].append(
-                            "Move configuration files outside web root or implement access restrictions"
-                        )
-                    
-                    if has_htaccess:
-                        result['recommendations'].append(
-                            "Implement proper .htaccess or web.config rules to block sensitive files"
-                        )
-                    
-                    # General recommendation if any critical files found
-                    result['recommendations'].append(
-                        "Audit all web-accessible directories and remove sensitive files"
-                    )
-                elif has_info_files:
-                    # Only robots.txt/sitemap.xml found (this is normal)
-                    result['status'] = 'PASS'
-                    result['severity'] = 'INFO'
-                    result['findings'] = ["robots.txt and/or sitemap.xml found (normal)"]
+
+                # Determine overall severity based on worst finding
+                severity_order = {'CRITICAL': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1, 'INFO': 0}
+                max_severity = max(f['severity'] for f in exposed_files)
+                result['severity'] = max_severity
+
+                # Generate recommendations based on findings
+                self._add_disclosure_recommendations(result, exposed_files)
             else:
                 result['findings'].append("No obvious sensitive files exposed")
-        
+
         except Exception as e:
             logging.error(f"Information disclosure test failed: {str(e)}")
             result['status'] = 'ERROR'
             result['error'] = str(e)
-        
+
         return result
     
     def test_port_scanning(self) -> Dict[str, Any]:
@@ -638,8 +1405,8 @@ class HowBadIsIt:
                             result['findings'].append(
                                 f"Port open: {port}/{service}"
                             )
-                except:
-                    pass
+                except (socket.error, OSError) as e:
+                    logging.debug(f"Socket error on port {port}: {e}")
                 finally:
                     sock.close()
             
@@ -1059,86 +1826,118 @@ class HowBadIsIt:
     def test_http_methods(self) -> Dict[str, Any]:
         """
         Test for insecure HTTP methods.
-        
+
         Checks for dangerous HTTP methods like PUT, DELETE, TRACE, CONNECT
         that could allow unauthorized operations.
+
+        Enhanced with SPA detection to avoid false positives where SPA
+        returns 200 for all methods but doesn't actually process them.
         """
         logging.info("Running HTTP methods security test...")
-        
+
         findings = []
         recommendations = []
         severity = 'INFO'
         status = 'PASS'
-        
+
         # Methods to test
         dangerous_methods = ['PUT', 'DELETE', 'TRACE', 'CONNECT']
-        all_methods = ['OPTIONS', 'HEAD', 'GET', 'POST', 'PUT', 'DELETE', 'TRACE', 'CONNECT', 'PATCH']
-        
+
         try:
+            # Get SPA fingerprint for context
+            spa_fingerprint = self._get_spa_fingerprint()
+
+            if spa_fingerprint['is_spa']:
+                findings.append(
+                    f"Note: Target is a SPA ({spa_fingerprint['spa_framework'] or 'Generic'}). "
+                    f"HTTP method testing will include SPA-aware validation."
+                )
+
             # Test OPTIONS to see what methods are allowed
             response = self._make_request(self.target, 'OPTIONS')
-            
+
             if response and 'Allow' in response.headers:
                 allowed_methods = [m.strip() for m in response.headers['Allow'].split(',')]
                 findings.append(f"Server reports allowed methods: {', '.join(allowed_methods)}")
-                
-                # Check for dangerous methods
+
+                # Check for dangerous methods in Allow header
                 dangerous_found = [m for m in dangerous_methods if m in allowed_methods]
-                
+
                 if dangerous_found:
-                    severity = 'MEDIUM'
-                    status = 'VULNERABLE'
-                    findings.append(f"⚠️ Dangerous methods enabled: {', '.join(dangerous_found)}")
-                    
-                    # Test if they actually work
+                    # Verify methods actually work (not just advertised)
+                    verified_dangerous = []
+
                     for method in dangerous_found:
-                        test_response = self._make_request(self.target, method)
-                        if test_response and test_response.status_code not in [405, 501]:
-                            findings.append(f"✗ {method} method is FUNCTIONAL (HTTP {test_response.status_code})")
-                            severity = 'HIGH'
+                        is_functional, evidence = self._verify_http_method(method, spa_fingerprint)
+
+                        if is_functional:
+                            verified_dangerous.append(method)
+                            findings.append(f"✗ VERIFIED: {method} method is FUNCTIONAL - {evidence}")
                         else:
-                            findings.append(f"✓ {method} method returns {test_response.status_code if test_response else 'no response'}")
-                    
-                    recommendations.extend([
-                        "Disable unnecessary HTTP methods (PUT, DELETE, TRACE, CONNECT)",
-                        "Configure web server to only allow GET, POST, HEAD, OPTIONS",
-                        "Implement proper authentication for administrative methods",
-                        "Use Web Application Firewall rules to block dangerous methods"
-                    ])
+                            findings.append(f"✓ ADVERTISED BUT NOT FUNCTIONAL: {method} - {evidence}")
+
+                    if verified_dangerous:
+                        severity = 'HIGH'
+                        status = 'VULNERABLE'
+                        findings.append(
+                            f"⚠️ Dangerous methods confirmed active: {', '.join(verified_dangerous)}"
+                        )
+                        recommendations.extend([
+                            "Disable unnecessary HTTP methods (PUT, DELETE, TRACE, CONNECT)",
+                            "Configure web server to only allow GET, POST, HEAD, OPTIONS",
+                            "Implement proper authentication for administrative methods",
+                            "Use Web Application Firewall rules to block dangerous methods"
+                        ])
+                    else:
+                        findings.append(
+                            f"Methods advertised in Allow header but not functional. "
+                            f"This may be a misconfiguration or SPA behavior."
+                        )
                 else:
                     findings.append("✓ No dangerous methods detected in Allow header")
+
             else:
                 # OPTIONS not supported or no Allow header
                 findings.append("Server doesn't respond to OPTIONS or provides no Allow header")
-                
-                # Test dangerous methods directly
+
+                # Test dangerous methods directly with SPA-aware validation
                 for method in dangerous_methods:
-                    response = self._make_request(self.target, method)
-                    if response and response.status_code == 200:
-                        findings.append(f"⚠️ {method} method returns HTTP 200 (potentially enabled)")
-                        severity = 'MEDIUM'
+                    is_functional, evidence = self._verify_http_method(method, spa_fingerprint)
+
+                    if is_functional:
+                        severity = 'HIGH' if severity != 'HIGH' else severity
                         status = 'VULNERABLE'
-                        recommendations.append(f"Investigate and disable {method} method")
-                    elif response and response.status_code in [405, 501]:
-                        findings.append(f"✓ {method} method properly disabled (HTTP {response.status_code})")
-            
-            # Check for TRACE (XST vulnerability)
+                        findings.append(f"✗ VERIFIED: {method} method is FUNCTIONAL - {evidence}")
+                        recommendations.append(f"Disable {method} method")
+                    else:
+                        findings.append(f"✓ {method} method: {evidence}")
+
+            # Special check for TRACE (XST vulnerability)
             trace_response = self._make_request(self.target, 'TRACE')
             if trace_response and trace_response.status_code == 200:
-                if self.target in trace_response.text:
-                    findings.append("✗ TRACE method enabled - Cross-Site Tracing (XST) vulnerability!")
+                # XST requires the response to echo the request
+                if 'TRACE' in trace_response.text and self.target in trace_response.text:
+                    findings.append("✗ CRITICAL: TRACE method echoes request - XST vulnerability!")
                     severity = 'HIGH'
                     status = 'VULNERABLE'
                     recommendations.append("Disable TRACE method to prevent XST attacks")
-            
+                elif spa_fingerprint['is_spa']:
+                    # Check if it's just returning index.html
+                    trace_hash = hashlib.sha256(trace_response.content).hexdigest()
+                    if trace_hash == spa_fingerprint['baseline_hash']:
+                        findings.append(
+                            "✓ TRACE returns 200 but response is SPA fallback (index.html). "
+                            "Not a true XST vulnerability."
+                        )
+
             if not recommendations:
                 recommendations.append("HTTP methods configuration appears secure")
-                
+
         except Exception as e:
             logging.error(f"HTTP methods test error: {str(e)}")
             findings.append(f"Test error: {str(e)}")
             status = 'ERROR'
-        
+
         return {
             'test_name': 'HTTP Methods Security',
             'description': 'Tests for insecure HTTP methods (PUT, DELETE, TRACE)',
@@ -2006,8 +2805,9 @@ class HowBadIsIt:
                             'username_field': username_field or 'username',
                             'password_field': password_field
                         }
-            except:
-                # Fallback: regex search for login patterns
+            except (AttributeError, KeyError, TypeError) as e:
+                # Fallback: regex search for login patterns if parsing fails
+                logging.debug(f"Form parsing error, using fallback: {e}")
                 content = response.text.lower()
                 if 'type="password"' in content or "type='password'" in content:
                     return {
@@ -3521,8 +4321,8 @@ class HowBadIsIt:
                                 result['findings'].append(
                                     f"⚠️ API endpoint {endpoint} contains password-related data"
                                 )
-                        except:
-                            pass
+                        except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
+                            logging.debug(f"Error testing API endpoint {endpoint}: {e}")
                 
                 except Exception as e:
                     logging.debug(f"API endpoint test error: {str(e)}")
@@ -4614,7 +5414,7 @@ class HowBadIsIt:
                                 result['findings'].append(
                                     "⚠️ CRITICAL (PCI-DSS): TLS 1.0 is supported (PROHIBITED since June 2024)"
                                 )
-                    except:
+                    except (ssl.SSLError, socket.error, OSError):
                         result['findings'].append("✓ TLS 1.0 correctly disabled (PCI-DSS compliant)")
                     
                     # Try TLS 1.1 (should fail - banned in PCI-DSS v4.0)
@@ -4628,7 +5428,7 @@ class HowBadIsIt:
                                 result['findings'].append(
                                     "⚠️ CRITICAL (PCI-DSS): TLS 1.1 is supported (PROHIBITED since June 2024)"
                                 )
-                    except:
+                    except (ssl.SSLError, socket.error, OSError):
                         result['findings'].append("✓ TLS 1.1 correctly disabled (PCI-DSS compliant)")
                     
                     # Check TLS 1.2+ support
@@ -4806,7 +5606,8 @@ class HowBadIsIt:
                                 jwt_found = True
                                 jwt_locations.append(f"Cookie: {cookie.name}")
                                 result['findings'].append(f"✓ JWT token detected in cookie: {cookie.name}")
-                            except:
+                            except (ValueError, TypeError, Exception):
+                                # Not a valid JWT, skip
                                 pass
                 
                 # Check for Authorization header (would need a request with auth)
@@ -4851,7 +5652,8 @@ class HowBadIsIt:
                         try:
                             data = response.json()
                             result['findings'].append(f"  OAuth discovery document available")
-                        except:
+                        except (json.JSONDecodeError, ValueError):
+                            # Not JSON, skip
                             pass
                 
                 except Exception as e:
@@ -5459,25 +6261,21 @@ class HowBadIsIt:
     def test_forced_browsing(self) -> Dict[str, Any]:
         """
         Test 31: Forced Browsing Detection
-        
+
         Tests for access to restricted URLs by directly browsing to them
         without proper authentication or authorization checks.
-        
+
+        Enhanced with SPA detection to eliminate false positives from
+        catch-all routing that returns index.html for all paths.
+
         Compliance:
         - OWASP Top 10 2021: A01 (Broken Access Control)
         - NIST CSF 2.0: PR.AC-5 (Network integrity protected)
         - PCI-DSS 4.0: Req 7.1 (Limit access to system components)
         - ISO 27001: A.9.4.1 (Information access restriction)
-        
-        Tests:
-        1. Admin/management interfaces
-        2. Backup files and directories
-        3. Configuration files
-        4. API endpoints without auth
-        5. Hidden directories
         """
         logging.info("Running forced browsing detection test...")
-        
+
         result = {
             'test_name': 'Forced Browsing Detection',
             'description': 'Tests for accessible restricted URLs and directories',
@@ -5492,198 +6290,238 @@ class HowBadIsIt:
                 'ISO_27001': 'A.9.4.1'
             }
         }
-        
+
         try:
-            # Restricted paths to test
+            # Get SPA fingerprint for false positive detection
+            spa_fingerprint = self._get_spa_fingerprint()
+
+            if spa_fingerprint['is_spa']:
+                result['findings'].append(
+                    f"SPA Detected: {spa_fingerprint['spa_framework'] or 'Generic'} "
+                    f"(baseline: {spa_fingerprint['baseline_size']} bytes)"
+                )
+
+            # Restricted paths to test with content validators
             restricted_paths = {
-                'admin': [
-                    '/admin', '/admin/', '/admin/index', '/admin/dashboard',
-                    '/administrator', '/administrator/', '/admin.php',
-                    '/admin/login', '/admin/login.php', '/wp-admin',
-                    '/phpmyadmin', '/phpMyAdmin', '/pma',
-                    '/manager', '/management', '/console'
-                ],
-                'backup': [
-                    '/backup', '/backups', '/backup.zip', '/backup.tar.gz',
-                    '/db_backup.sql', '/database.sql', '/backup.sql',
-                    '/.backup', '/old', '/backup.tar', '/site_backup.zip'
-                ],
-                'config': [
-                    '/config', '/config.php', '/configuration.php',
-                    '/config.yml', '/config.json', '/.env',
-                    '/settings', '/settings.php', '/web.config',
-                    '/.git/config', '/application.properties'
-                ],
-                'api': [
-                    '/api', '/api/v1', '/api/v2', '/api/admin',
-                    '/api/users', '/api/user', '/api/config',
-                    '/rest', '/rest/api', '/graphql'
-                ],
-                'hidden': [
-                    '/.git', '/.svn', '/.hg', '/.ds_store',
-                    '/CVS', '/.htaccess', '/.htpasswd',
-                    '/robots.txt', '/sitemap.xml'
-                ]
+                'admin': {
+                    'paths': [
+                        '/admin', '/admin/', '/admin/index', '/admin/dashboard',
+                        '/administrator', '/administrator/', '/admin.php',
+                        '/admin/login', '/admin/login.php', '/wp-admin',
+                        '/phpmyadmin', '/phpMyAdmin', '/pma',
+                        '/manager', '/management', '/console'
+                    ],
+                    'indicators': ['admin', 'dashboard', 'control panel', 'login', 'username', 'password'],
+                    'severity': 'CRITICAL'
+                },
+                'backup': {
+                    'paths': [
+                        '/backup', '/backups', '/backup.zip', '/backup.tar.gz',
+                        '/db_backup.sql', '/database.sql', '/backup.sql',
+                        '/.backup', '/old', '/backup.tar', '/site_backup.zip'
+                    ],
+                    'indicators': ['sql', 'database', 'backup', 'dump', 'CREATE TABLE', 'INSERT INTO'],
+                    'severity': 'CRITICAL'
+                },
+                'config': {
+                    'paths': [
+                        '/config', '/config.php', '/configuration.php',
+                        '/config.yml', '/config.json', '/.env',
+                        '/settings', '/settings.php', '/web.config',
+                        '/.git/config', '/application.properties'
+                    ],
+                    'indicators': ['password', 'api_key', 'secret', 'database', 'db_', 'host', 'port'],
+                    'severity': 'CRITICAL'
+                },
+                'api': {
+                    'paths': [
+                        '/api', '/api/v1', '/api/v2', '/api/admin',
+                        '/api/users', '/api/user', '/api/config',
+                        '/rest', '/rest/api', '/graphql'
+                    ],
+                    'indicators': ['api', 'endpoint', 'swagger', 'openapi', '"data"', '"error"'],
+                    'severity': 'HIGH'
+                },
+                'hidden': {
+                    'paths': [
+                        '/.git', '/.svn', '/.hg', '/.ds_store',
+                        '/CVS', '/.htaccess', '/.htpasswd',
+                        '/robots.txt', '/sitemap.xml'
+                    ],
+                    'indicators': ['.git', 'index of', 'directory listing', 'core]', 'User-agent'],
+                    'severity': 'MEDIUM'
+                }
             }
-            
+
             accessible_paths = []
             critical_paths = []
+            false_positives_filtered = 0
             tested_count = 0
-            
-            result['findings'].append("Testing restricted paths...")
-            
+
+            result['findings'].append("Testing restricted paths with SPA-aware validation...")
+
             # Test each category
-            for category, paths in restricted_paths.items():
-                for path in paths:
+            for category, config in restricted_paths.items():
+                for path in config['paths']:
                     try:
                         url = urljoin(self.target, path)
                         response = self._make_request(url, timeout=3)
                         tested_count += 1
-                        
-                        if response:
-                            # Consider different status codes
-                            if response.status_code == 200:
+
+                        if not response:
+                            continue
+
+                        # Skip explicit denials
+                        if response.status_code in [401, 403, 404, 410]:
+                            continue
+
+                        if response.status_code == 200:
+                            # SPA false positive check
+                            is_catchall, reason = self._is_spa_catchall_response(
+                                response,
+                                self._get_expected_content_type(path)
+                            )
+
+                            if is_catchall:
+                                false_positives_filtered += 1
+                                logging.debug(f"FALSE POSITIVE: {path} - {reason}")
+                                continue
+
+                            # Validate content matches expected indicators
+                            content_lower = response.text.lower()
+                            found_indicators = []
+
+                            for indicator in config['indicators']:
+                                if indicator.lower() in content_lower:
+                                    found_indicators.append(indicator)
+
+                            # Determine if this is a true positive
+                            is_true_positive = False
+                            confidence = 'LOW'
+
+                            if found_indicators:
+                                is_true_positive = True
+                                confidence = 'HIGH' if len(found_indicators) >= 2 else 'MEDIUM'
+                            else:
+                                # Check for non-HTML content where HTML not expected
+                                content_type = response.headers.get('Content-Type', '')
+
+                                # Files like .sql, .env should not return HTML
+                                if path.endswith(('.sql', '.env', '.yml', '.yaml', '.json', '.config')):
+                                    if 'text/html' not in content_type:
+                                        is_true_positive = True
+                                        confidence = 'MEDIUM'
+                                elif 'text/html' in content_type:
+                                    # HTML content - check for login forms, admin panels
+                                    form_indicators = ['<form', 'type="password"', 'login', 'sign in']
+                                    if any(ind in content_lower for ind in form_indicators):
+                                        is_true_positive = True
+                                        confidence = 'MEDIUM'
+
+                            if is_true_positive:
                                 accessible_paths.append({
                                     'path': path,
                                     'category': category,
                                     'status': 200,
-                                    'size': len(response.text)
+                                    'size': len(response.text),
+                                    'indicators': found_indicators,
+                                    'confidence': confidence,
+                                    'severity': config['severity']
                                 })
-                                
-                                content_lower = response.text.lower()
-                                
-                                # Check for sensitive content
-                                sensitive_indicators = {
-                                    'admin': ['admin', 'dashboard', 'control panel', 'users', 'settings'],
-                                    'backup': ['sql', 'database', 'backup', 'dump'],
-                                    'config': ['password', 'api_key', 'secret', 'database', 'db_'],
-                                    'api': ['api', 'endpoint', 'swagger', 'openapi'],
-                                    'hidden': ['.git', 'index of', 'directory listing']
-                                }
-                                
-                                found_indicators = []
-                                if category in sensitive_indicators:
-                                    for indicator in sensitive_indicators[category]:
-                                        if indicator in content_lower:
-                                            found_indicators.append(indicator)
-                                
-                                # Determine severity
-                                is_critical = False
-                                
-                                if category in ['admin', 'config', 'backup']:
-                                    is_critical = True
-                                    result['severity'] = 'CRITICAL'
-                                    result['status'] = 'VULNERABLE'
-                                elif category in ['api', 'hidden']:
-                                    if result['severity'] == 'INFO':
-                                        result['severity'] = 'HIGH'
-                                        result['status'] = 'VULNERABLE'
-                                
-                                if is_critical:
+
+                                if config['severity'] == 'CRITICAL':
                                     critical_paths.append({
                                         'path': path,
                                         'category': category,
                                         'indicators': found_indicators
                                     })
-                                    
                                     result['findings'].append(
-                                        f"⚠️ CRITICAL: Accessible {category} path: {path}"
+                                        f"⚠️ CRITICAL: Accessible {category} path: {path} "
+                                        f"(confidence: {confidence})"
                                     )
                                     if found_indicators:
                                         result['findings'].append(
-                                            f"  Contains: {', '.join(found_indicators[:3])}"
+                                            f"  Evidence: {', '.join(found_indicators[:3])}"
                                         )
-                                elif len(found_indicators) > 0:
+                                    result['severity'] = 'CRITICAL'
+                                    result['status'] = 'VULNERABLE'
+                                else:
                                     result['findings'].append(
-                                        f"⚠️ HIGH: Accessible {category} path: {path}"
+                                        f"⚠️ HIGH: Accessible {category} path: {path} "
+                                        f"(confidence: {confidence})"
                                     )
-                            
-                            elif response.status_code in [301, 302, 303, 307, 308]:
-                                # Redirect might indicate path exists
-                                location = response.headers.get('Location', '')
-                                if '/login' not in location.lower():
-                                    accessible_paths.append({
-                                        'path': path,
-                                        'category': category,
-                                        'status': response.status_code,
-                                        'redirect': location
-                                    })
-                    
+                                    if result['severity'] == 'INFO':
+                                        result['severity'] = 'HIGH'
+                                        result['status'] = 'VULNERABLE'
+                            else:
+                                # Low confidence - may be false positive
+                                false_positives_filtered += 1
+
+                        elif response.status_code in [301, 302, 303, 307, 308]:
+                            # Redirect might indicate path exists
+                            location = response.headers.get('Location', '')
+                            if location and '/login' not in location.lower():
+                                # Redirect to non-login page - potentially accessible
+                                accessible_paths.append({
+                                    'path': path,
+                                    'category': category,
+                                    'status': response.status_code,
+                                    'redirect': location,
+                                    'confidence': 'LOW'
+                                })
+
                     except Exception as e:
                         logging.debug(f"Forced browsing test error for {path}: {str(e)}")
-            
+
             # Summary
             result['findings'].append(f"Tested {tested_count} restricted paths")
-            
-            if len(accessible_paths) > 0:
+            result['findings'].append(
+                f"Filtered {false_positives_filtered} SPA catch-all false positives"
+            )
+
+            if accessible_paths:
                 result['findings'].append(
-                    f"Found {len(accessible_paths)} accessible path(s)"
+                    f"Found {len(accessible_paths)} potentially accessible path(s)"
                 )
-            
-            if len(critical_paths) > 0:
+                result['accessible_paths'] = accessible_paths
+
+            if critical_paths:
                 result['findings'].append(
-                    f"⚠️ Found {len(critical_paths)} CRITICAL accessible path(s)"
+                    f"⚠️ ALERT: {len(critical_paths)} CRITICAL path(s) confirmed accessible"
                 )
-            
+                result['critical_paths'] = critical_paths
+
             # Recommendations
             if result['status'] == 'VULNERABLE':
-                result['recommendations'].append(
-                    "CRITICAL: Restricted areas accessible without authentication!"
-                )
-                result['recommendations'].append(
-                    "Immediate actions:"
-                )
-                result['recommendations'].append(
-                    "  1. Implement authentication on ALL admin/management interfaces"
-                )
-                result['recommendations'].append(
-                    "  2. Remove backup files from web-accessible directories"
-                )
-                result['recommendations'].append(
-                    "  3. Move config files outside document root"
-                )
-                result['recommendations'].append(
-                    "  4. Disable directory listing"
-                )
-                result['recommendations'].append(
-                    "  5. Remove .git, .svn and other VCS directories"
-                )
-                result['recommendations'].append(
+                result['recommendations'].extend([
+                    "CRITICAL: Restricted areas accessible without authentication!",
+                    "Immediate actions:",
+                    "  1. Implement authentication on ALL admin/management interfaces",
+                    "  2. Remove backup files from web-accessible directories",
+                    "  3. Move config files outside document root",
+                    "  4. Disable directory listing",
+                    "  5. Remove .git, .svn and other VCS directories",
                     "PCI-DSS Req 7.1: Limit access to system components by role"
-                )
-                
+                ])
+
                 result['compliance']['OWASP_Top_10_2021'] += ' - FAIL (CRITICAL)'
                 result['compliance']['PCI_DSS_4.0'] += ' - FAIL (unrestricted access)'
             else:
                 result['findings'].append("✓ No forced browsing vulnerabilities detected")
-                
-                result['recommendations'].append(
-                    "Forced Browsing Prevention:"
-                )
-                result['recommendations'].append(
-                    "  - Implement authentication on all administrative interfaces"
-                )
-                result['recommendations'].append(
-                    "  - Use deny-by-default access control"
-                )
-                result['recommendations'].append(
-                    "  - Remove unnecessary files (backups, configs, VCS)"
-                )
-                result['recommendations'].append(
-                    "  - Disable directory listing in web server config"
-                )
-                result['recommendations'].append(
-                    "  - Use robots.txt to discourage (not prevent) indexing"
-                )
-                result['recommendations'].append(
+                result['recommendations'].extend([
+                    "Forced Browsing Prevention Best Practices:",
+                    "  - Implement authentication on all administrative interfaces",
+                    "  - Use deny-by-default access control",
+                    "  - Remove unnecessary files (backups, configs, VCS)",
+                    "  - Disable directory listing in web server config",
                     "  - Regular security audits for exposed files"
-                )
-        
+                ])
+
         except Exception as e:
             result['status'] = 'ERROR'
             result['error'] = str(e)
             logging.error(f"Forced browsing test error: {str(e)}")
-        
+
         return result
 
     def test_vertical_authorization_bypass(self) -> Dict[str, Any]:
@@ -6379,9 +7217,18 @@ DETAILED FINDINGS:
         
         # Save or print output
         if args.file:
-            with open(args.file, 'w') as f:
+            # Validate output path to prevent path traversal
+            abs_path = os.path.abspath(args.file)
+            cwd = os.getcwd()
+            if not abs_path.startswith(cwd):
+                print(f"\n[✗] Error: Output file must be in current directory")
+                print(f"    Attempted path: {abs_path}")
+                print(f"    Current directory: {cwd}")
+                sys.exit(1)
+
+            with open(abs_path, 'w') as f:
                 f.write(output)
-            print(f"\n[✓] Report saved to: {args.file}")
+            print(f"\n[✓] Report saved to: {abs_path}")
         else:
             print(output)
         

@@ -4,10 +4,15 @@
 # Facilita o uso do scanner via Docker
 
 set -e
+set -o pipefail
+
+# Error handling traps
+trap 'error "Script failed at line $LINENO"; exit 1' ERR
+trap 'echo ""; warning "Operation cancelled"; exit 0' INT TERM
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="howbadisit"
-IMAGE_TAG="2.5.0"
+IMAGE_TAG="2.5.1"
 REPORTS_DIR="${SCRIPT_DIR}/reports"
 
 # Cores
@@ -108,30 +113,72 @@ run_scan() {
     mkdir -p "${REPORTS_DIR}"
     
     info "Running scan..."
-    
+
     docker run --rm --network host \
+        --memory 2g --cpus 2 --pids-limit 100 \
         -v "${REPORTS_DIR}:/app/reports" \
         "${IMAGE_NAME}:latest" "$@"
+}
+
+# Target validation function
+validate_target() {
+    local target="$1"
+
+    # SECURITY: Reject ALL shell metacharacters to prevent command injection
+    # Expanded list includes: ; $ ` | & < > ( ) { } [ ] \ * ? ~ ! # " ' newline tab
+    if [[ "$target" =~ [';$`|&<>(){}[\]\\*?~!#"'$'\t\n'] ]]; then
+        error "Target contains invalid shell metacharacters"
+        return 1
+    fi
+
+    # Reject URLs with embedded credentials (user:pass@host)
+    if [[ "$target" =~ @ ]] && [[ "$target" =~ : ]]; then
+        # Allow email-like patterns but reject credentials in URLs
+        if [[ "$target" =~ ://.*:.*@ ]]; then
+            error "Embedded credentials in URLs are not allowed"
+            return 1
+        fi
+    fi
+
+    # Basic format validation (allow URLs and domains with ports/paths)
+    # Allow: alphanumeric, dot, hyphen, colon (for port), slash (for path), equals and ampersand (for query params)
+    if ! [[ "$target" =~ ^(https?://)?[a-zA-Z0-9.-]+(:[0-9]+)?(/[a-zA-Z0-9._/=&%-]*)?$ ]]; then
+        error "Invalid target format. Use domain.com or http://domain.com or http://domain.com/path"
+        return 1
+    fi
+
+    return 0
 }
 
 # Scan interativo
 interactive_scan() {
     echo ""
     read -p "Target (URL or domain): " target
-    
+
     if [ -z "$target" ]; then
         error "Target cannot be empty!"
         exit 1
     fi
-    
+
+    # Validate target
+    if ! validate_target "$target"; then
+        exit 1
+    fi
+
     read -p "Output format (text/json) [text]: " format
     format=${format:-text}
-    
+
     if [ "$format" = "json" ]; then
         timestamp=$(date +%Y%m%d_%H%M%S)
         filename="report_${target//[^a-zA-Z0-9]/_}_${timestamp}.json"
         read -p "Output file [$filename]: " custom_filename
         filename=${custom_filename:-$filename}
+
+        # Validate custom filename if provided
+        if [ -n "$custom_filename" ] && ! [[ "$custom_filename" =~ ^[a-zA-Z0-9_-]+\.json$ ]]; then
+            error "Invalid filename. Use only alphanumeric, hyphen, underscore and .json extension"
+            exit 1
+        fi
         
         run_scan -t "$target" -o json -f "/app/reports/$filename"
         success "Report saved: ${REPORTS_DIR}/$filename"
@@ -143,23 +190,35 @@ interactive_scan() {
 # Gerar relatório HTML
 generate_report() {
     check_image
-    
+
     if [ $# -lt 1 ]; then
         error "Usage: $0 report <json_file> [html_file]"
         exit 1
     fi
-    
+
     json_file="$1"
     html_file="${2:-${json_file%.json}.html}"
-    
+
     if [ ! -f "${json_file}" ]; then
         error "JSON file not found: ${json_file}"
         exit 1
     fi
-    
+
+    # Validate that json_file is within REPORTS_DIR (path traversal protection)
+    json_file_abs=$(readlink -f "$json_file")
+    reports_dir_abs=$(readlink -f "${REPORTS_DIR}")
+
+    if [[ ! "$json_file_abs" =~ ^"$reports_dir_abs"/ ]]; then
+        error "Security: JSON file must be in reports directory"
+        error "  File: $json_file_abs"
+        error "  Expected: $reports_dir_abs/"
+        exit 1
+    fi
+
     info "Generating HTML report..."
-    
+
     docker run --rm \
+        --memory 1g --cpus 1 --pids-limit 50 \
         -v "${REPORTS_DIR}:/app/reports" \
         "${IMAGE_NAME}:latest" \
         python3 html_report_generator.py "/app/reports/$(basename ${json_file})" "/app/reports/$(basename ${html_file})"
@@ -172,8 +231,9 @@ shell() {
     check_image
     
     info "Starting interactive shell in container..."
-    
+
     docker run --rm -it --network host \
+        --memory 2g --cpus 2 --pids-limit 100 \
         -v "${REPORTS_DIR}:/app/reports" \
         --entrypoint /bin/bash \
         "${IMAGE_NAME}:latest"

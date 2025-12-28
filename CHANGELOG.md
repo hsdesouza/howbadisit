@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+## [2.5.1] - 2024-12-27
+### Security Fixes
+- **SECURITY (HIGH):** Fixed XSS vulnerability in HTML report generator via unsanitized test names
+  - Added `_sanitize_html_id()`, `_sanitize_html_class()`, and `_escape_html_content()` functions
+  - All HTML IDs, classes, and content now properly sanitized
+  - Prevents reflected XSS via malicious test names in reports
+
+- **SECURITY (HIGH):** Fixed path traversal vulnerability in template loading
+  - Changed from relative path `templates/report.html` to absolute path using `__file__`
+  - Added `_get_template_path()` function with existence validation
+  - Prevents reading arbitrary files if `os.getcwd()` is manipulated
+
+- **SECURITY (MEDIUM):** Enhanced shell metacharacter validation
+  - Expanded blocked characters from 9 to 22 metacharacters
+  - Now blocks: `; $ \` | & < > ( ) { } [ ] \\ * ? ~ ! # " ' \\t \\n`
+  - Added credential-in-URL detection (rejects `://user:pass@host` patterns)
+  - Prevents command injection in shell wrapper
+
+- **SECURITY (MEDIUM):** Implemented sensitive header redaction in logs
+  - Added `_redact_headers()`, `_redact_url()`, and `_redact_sensitive_value()` functions
+  - Redacts: Authorization, Cookie, X-API-Key, X-Auth-Token, and 15+ other sensitive headers
+  - Prevents credential leakage in `howbadisit.log` file
+  - Debug mode (`-v`) also uses redacted headers
+
+### Added
+- **Evidence structure for HIGH/CRITICAL findings:**
+  - New `VulnerabilityEvidence`, `RequestEvidence`, and `ResponseEvidence` dataclasses
+  - Helper functions: `_create_request_evidence()`, `_create_response_evidence()`, `_build_evidence()`
+  - Provides reproducible proof with baseline comparison for audit trail
+  - Improves legal defensibility for MSSP engagements (R$ 15k-32k per client)
+
+### Changed
+- Report JSON structure now includes optional `evidence` field for HIGH/CRITICAL findings
+- Template path now resolved relative to script location (not working directory)
+- All HTML attributes (id, class, data-*) now sanitized before output
+- Scanner version updated to 2.5.1 in all components
+
+### Impact
+- **False positive risk:** REDUCED (structured evidence enables better validation)
+- **Security posture:** IMPROVED (scanner itself hardened against attacks)
+- **Compliance:** ENHANCED (audit trail for legal defensibility)
+- **Breaking changes:** NONE (all changes are backwards-compatible)
+
 ## [2.5.0] - 2024-12-27
 ### Added
 - **Phase 4B Complete: Access Control Security (5 new tests)**

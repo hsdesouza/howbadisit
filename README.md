@@ -1,26 +1,28 @@
-# 🔒 HowBadIsIt? v2.5.0
+# 🔒 HowBadIsIt? v2.5.1
 
 Professional Web Application Security Scanner
 
-[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)](https://github.com/hsdesouza/howbadisit/releases)
+[![Version](https://img.shields.io/badge/version-2.5.1-blue.svg)](https://github.com/hsdesouza/howbadisit/releases)
 [![OWASP](https://img.shields.io/badge/OWASP%20Top%2010-100%25-brightgreen.svg)](https://owasp.org/Top10/)
 [![Tests](https://img.shields.io/badge/tests-33-success.svg)](https://github.com/hsdesouza/howbadisit)
+[![Security](https://img.shields.io/badge/security-hardened-brightgreen.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## 🎉 What's New in v2.5.0
+## 🎉 What's New in v2.5.1
 
-### **Phase 4B Complete: Access Control Security**
+### **🔐 Security Hardening Release**
 
-- ✅ **OWASP Top 10 Coverage: 100%** (complete!)
-- ✅ **5 New CRITICAL Tests** for Access Control
-- ✅ **33 Total Professional Tests**
+- ✅ **2 HIGH Priority Fixes:** XSS prevention + Path traversal protection
+- ✅ **3 MEDIUM Priority Fixes:** Shell injection + Header redaction + Evidence structure
+- ✅ **Scanner Self-Security:** Hardened against malicious inputs
+- ✅ **Audit Trail:** Structured evidence for HIGH/CRITICAL findings
 
-**New Tests:**
-- **Test 29:** IDOR Detection
-- **Test 30:** Path Traversal Detection
-- **Test 31:** Forced Browsing Detection
-- **Test 32:** Vertical Authorization Bypass
-- **Test 33:** Horizontal Authorization Bypass
+**Security Improvements:**
+- **Fixed XSS:** HTML IDs/classes/content now sanitized in reports
+- **Fixed Path Traversal:** Template loading uses absolute paths
+- **Enhanced Shell Protection:** 22 metacharacters blocked (vs 9 before)
+- **Header Redaction:** Sensitive headers (Auth, Cookie, API keys) redacted in logs
+- **Evidence Structure:** Reproducible proof for legal defensibility
 
 ---
 
@@ -118,6 +120,13 @@ cd /opt/howbadisit
 
 ## 📈 Version History
 
+### v2.5.1 (2024-12-27) - Security Hardening
+- **Scanner Self-Security:** Fixed 5 security vulnerabilities
+- **2 HIGH:** XSS prevention + Path traversal protection
+- **3 MEDIUM:** Shell injection + Header redaction + Evidence structure
+- **Audit Trail:** Structured evidence for HIGH/CRITICAL findings
+- **Breaking changes:** NONE (backwards-compatible)
+
 ### v2.5.0 (2024-12-27) - Phase 4B Complete
 - **OWASP Top 10: 100%** ✅
 - Added 5 access control tests
@@ -140,7 +149,7 @@ cd /opt/howbadisit
 
 ## 💰 Commercial Value
 
-**Current capabilities (v2.5.0):**
+**Current capabilities (v2.5.1):**
 - **Base Security Audit:** R$ 5.000-8.000
 - **PCI-DSS Compliance Report:** +R$ 3.000-5.000
 - **LGPD Compliance Assessment:** +R$ 2.000-4.000

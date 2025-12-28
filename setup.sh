@@ -26,7 +26,7 @@ NC='\033[0m' # No Color
 # Variáveis globais
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="howbadisit"
-IMAGE_TAG="2.5.0"
+IMAGE_TAG="2.5.1"
 REPO_URL="git@github.com:hsdesouza/howbadisit.git"
 INSTALL_DIR="/opt/howbadisit"
 
